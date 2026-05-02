@@ -19,18 +19,35 @@
 - Storage: `evalops-trace-uploads` and `evalops-exports` buckets are private and organization-prefixed.
 - Server code uses `SUPABASE_SECRET_KEY` or `SUPABASE_SERVICE_ROLE_KEY`; these must never use `NEXT_PUBLIC_`.
 
+## Supabase Remote Status
+
+Remote project `EvalOps` (`bkjgpuhwqlbybpfkutyf`) is connected through the Supabase plugin.
+
+Applied migrations:
+
+1. `create_evalops_core`
+2. `harden_evalops_indexes_and_rls_policies`
+3. `optimize_evalops_rls_initplans`
+
+Verification:
+
+- Public tables created: 21.
+- Private buckets created: `evalops-trace-uploads`, `evalops-exports`.
+- RLS is enabled on tenant-scoped public tables.
+- Supabase security advisors: no lints.
+- Supabase performance advisors: only `unused_index` INFO notices remain, expected immediately after creating an empty schema before traffic/query stats accumulate.
+
 ## Deployment Status
 
-The local checkout is not linked to a Vercel project and is not linked to a Supabase project. The May 2, 2026 audit found:
+The local checkout is not linked to a Vercel project. The May 2, 2026 audit found:
 
-- Supabase CLI is authenticated but only listed an unrelated inactive `ShaneStag` project; the Supabase connector returned no projects.
 - Vercel CLI is authenticated, but this repo has no `.vercel/project.json` and the Vercel project list has no EvalOps project.
-- Production Clerk and Supabase environment variables are not present locally.
+- Production Clerk environment variables and the Supabase server secret are not present locally.
 
 Use:
 
 ```bash
-supabase link --project-ref <project-ref>
+supabase link --project-ref bkjgpuhwqlbybpfkutyf
 supabase db push
 supabase db advisors --linked
 vercel link
