@@ -96,12 +96,20 @@ export async function createLocalEvalOpsStore(options: LocalStoreOptions): Promi
 
 class LocalEvalOpsStore implements EvalOpsStore {
   private readonly statePath: string;
+  private writeQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly rootDir: string) {
     this.statePath = join(rootDir, "store.json");
   }
 
+  private withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.writeQueue.then(operation, operation);
+    this.writeQueue = next.catch(() => undefined);
+    return next;
+  }
+
   async ensureWorkspace(actor: ActorContext) {
+    return this.withWriteLock(async () => {
     const state = await this.load();
     const now = new Date().toISOString();
     const userId = actor.userId;
@@ -155,6 +163,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
 
     await this.save(state);
     return selectWorkspace(state, organizationId, undefined, user, organization, membership);
+    });
   }
 
   async getWorkspaceState(actor: ActorContext, projectId?: string) {
@@ -177,6 +186,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
   }
 
   async createProject(actor: ActorContext, input: CreateProjectInput) {
+    return this.withWriteLock(async () => {
     const state = await this.load();
     const context = ensureLocalMembership(state, actor);
     const now = new Date().toISOString();
@@ -202,9 +212,11 @@ class LocalEvalOpsStore implements EvalOpsStore {
     seedPromptAndOptimization(state, actor, project);
     await this.save(state);
     return project;
+    });
   }
 
   async createTraceImport(actor: ActorContext, input: CreateTraceImportInput) {
+    return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
     const project = findProject(state, context.organization.id, input.projectId);
@@ -322,9 +334,11 @@ class LocalEvalOpsStore implements EvalOpsStore {
 
     await this.save(state);
     return { importRecord, job };
+    });
   }
 
   async updateIssue(actor: ActorContext, input: { issueId: string; status: StoredIssue["status"]; comment?: string }) {
+    return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
     const issue = state.issues.find(
@@ -364,6 +378,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
     }
     await this.save(state);
     return issue;
+    });
   }
 
   async updateEvalCase(
@@ -376,6 +391,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
       status?: StoredEvalCase["status"];
     },
   ) {
+    return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
     const evalCase = state.evalCases.find(
@@ -394,9 +410,11 @@ class LocalEvalOpsStore implements EvalOpsStore {
     );
     await this.save(state);
     return evalCase;
+    });
   }
 
   async createExport(actor: ActorContext, projectId: string) {
+    return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
     const project = findProject(state, context.organization.id, projectId);
@@ -427,6 +445,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
     );
     await this.save(state);
     return exportRecord;
+    });
   }
 
   async getExport(actor: ActorContext, exportId: string) {
@@ -441,6 +460,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
   }
 
   async rerunEvaluation(actor: ActorContext, projectId: string) {
+    return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
     const project = findProject(state, context.organization.id, projectId);
@@ -469,9 +489,11 @@ class LocalEvalOpsStore implements EvalOpsStore {
     );
     await this.save(state);
     return run;
+    });
   }
 
   async promotePromptCandidate(actor: ActorContext, projectId: string, candidateId: string) {
+    return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
     const project = findProject(state, context.organization.id, projectId);
@@ -499,6 +521,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
     );
     await this.save(state);
     return promptVersion;
+    });
   }
 
   private async load(): Promise<LocalState> {

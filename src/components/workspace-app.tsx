@@ -320,6 +320,7 @@ function TraceImportView({
   mutate: <T>(label: string, action: () => Promise<T>, projectId?: string) => Promise<void>;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const project = state.activeProject;
   return (
     <>
@@ -330,27 +331,41 @@ function TraceImportView({
       />
       <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
         <Card className="p-6">
-          <input ref={fileRef} type="file" accept=".csv,.json,.ndjson,.txt" className="sr-only" />
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,.json,.ndjson,.txt"
+            className="sr-only"
+            onChange={(event) => setSelectedFile(event.currentTarget.files?.[0]?.name || null)}
+          />
           <div className="rounded-[8px] border border-dashed border-blue-200 bg-blue-50/30 p-8 text-center">
             <UploadCloud className="mx-auto h-10 w-10 text-blue-600" />
             <h2 className="mt-4 text-lg font-semibold text-slate-950">Upload trace file</h2>
             <p className="mt-2 text-sm text-slate-600">Browser upload posts to the backend, then Supabase Storage or the test store persists the file.</p>
-            <Button
-              className="mt-5"
-              disabled={!project || busy === "upload"}
-              onClick={() =>
-                mutate("upload", async () => {
-                  const file = fileRef.current?.files?.[0];
-                  if (!file) throw new Error("Choose a file before uploading.");
-                  const form = new FormData();
-                  form.append("file", file);
-                  return api(`/api/projects/${project?.id}/imports`, { method: "POST", body: form });
-                })
-              }
-            >
-              {busy === "upload" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-              {busy === "upload" ? "Processing..." : "Upload and process"}
-            </Button>
+            <div className="mt-5 flex flex-col items-center justify-center gap-3 sm:flex-row">
+              <Button variant="secondary" type="button" disabled={!project || busy === "upload"} onClick={() => fileRef.current?.click()}>
+                Choose file
+              </Button>
+              <Button
+                type="button"
+                disabled={!project || !selectedFile || busy === "upload"}
+                onClick={() =>
+                  mutate("upload", async () => {
+                    const file = fileRef.current?.files?.[0];
+                    if (!file) throw new Error("Choose a file before uploading.");
+                    const form = new FormData();
+                    form.append("file", file);
+                    return api(`/api/projects/${project?.id}/imports`, { method: "POST", body: form });
+                  })
+                }
+              >
+                {busy === "upload" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                {busy === "upload" ? "Processing..." : "Upload and process"}
+              </Button>
+            </div>
+            <p className="mt-3 text-xs font-medium text-slate-500">
+              {selectedFile ? `Selected: ${selectedFile}` : "No file selected"}
+            </p>
           </div>
           <div className="mt-5 overflow-x-auto">
             <table className="w-full min-w-[760px] text-left text-sm">
@@ -465,6 +480,15 @@ function EvalBuilderView({
                       <Badge tone={issue.status === "open" || issue.status === "reopened" ? "red" : "green"}>{issue.status}</Badge>
                     </div>
                     <p className="mt-2 text-sm leading-6 text-slate-600">{issue.description}</p>
+                    <div className="mt-3 space-y-2">
+                      {state.issueComments.filter((item) => item.issueId === issue.id).map((item) => (
+                        <div key={item.id} className="rounded-[7px] bg-slate-50 p-2 text-xs leading-5 text-slate-600">
+                          <span className="font-semibold text-slate-800">{item.actorUserId}</span>
+                          <span className="ml-2 text-slate-400">{formatDate(item.createdAt)}</span>
+                          <p className="mt-1">{item.body}</p>
+                        </div>
+                      ))}
+                    </div>
                     <textarea className="mt-3 min-h-20 w-full rounded-[7px] border border-slate-200 p-2 text-sm" value={comment} onChange={(event) => setComment(event.target.value)} />
                     <div className="mt-3 flex gap-2">
                       <Button disabled={busy === issue.id} onClick={() => mutate(issue.id, () => api(`/api/issues/${issue.id}`, { method: "PATCH", body: JSON.stringify({ status: "resolved", comment }) }))}>Resolve</Button>

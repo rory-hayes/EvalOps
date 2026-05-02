@@ -21,14 +21,36 @@
 
 ## Deployment Status
 
-The local checkout is not linked to a Vercel project and is not linked to a Supabase project. Use:
+The local checkout is not linked to a Vercel project and is not linked to a Supabase project. The May 2, 2026 audit found:
+
+- Supabase CLI is authenticated but only listed an unrelated inactive `ShaneStag` project; the Supabase connector returned no projects.
+- Vercel CLI is authenticated, but this repo has no `.vercel/project.json` and the Vercel project list has no EvalOps project.
+- Production Clerk and Supabase environment variables are not present locally.
+
+Use:
 
 ```bash
 supabase link --project-ref <project-ref>
 supabase db push
+supabase db advisors --linked
 vercel link
+vercel env add NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY production
+vercel env add CLERK_SECRET_KEY production
+vercel env add NEXT_PUBLIC_SUPABASE_URL production
+vercel env add NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY production
+vercel env add SUPABASE_SECRET_KEY production
+vercel env add OPENAI_API_KEY production
 vercel deploy --prod
 ```
+
+Do not deploy with `EVALOPS_TEST_MODE=1`; that mode is only for deterministic local and CI verification.
+
+## Latest Local Audit
+
+- Unit/integration tests cover trace parsing, local persistence, API flow, failed uploads, comments, exports, and tenant isolation.
+- Playwright E2E covers project creation, visible file selection, trace upload/processing, issue resolution with a comment, CSV export, and audit trail visibility.
+- In-app browser smoke on `http://localhost:3102` verified all primary pages render after project creation and the trace import page exposes visible file selection.
+- Local Supabase migration application reached `Applying migration 20260502070158_create_evalops_core.sql` successfully before Docker failed on a local `supabase/snippets` mount permission. Remote migration push is still pending the intended project ref.
 
 ## Known Limits
 

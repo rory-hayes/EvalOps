@@ -15,14 +15,17 @@ test("user completes Eval Debt Audit flow end to end", async ({ page }) => {
         "c_1,I asked three times and this is still not fixed,Try restarting the app.",
     ),
   });
+  await expect(page.getByText("Selected: support.csv")).toBeVisible();
   await page.getByRole("button", { name: /upload and process/i }).click();
   await expect(page.getByText("completed").first()).toBeVisible();
   await expect(page.getByText("Escalation").first()).toBeVisible();
 
   await page.goto("/eval-builder");
   await expect(page.getByText("Escalation handoff missing")).toBeVisible();
+  await page.getByRole("textbox").fill("Resolved during E2E review.");
   await page.getByRole("button", { name: "Resolve" }).click();
   await expect(page.getByText("resolved").first()).toBeVisible();
+  await expect(page.getByText("Resolved during E2E review.")).toBeVisible();
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: /export csv/i }).click();

@@ -108,4 +108,29 @@ describe("local evalops store", () => {
       expect.arrayContaining(["issue.resolved", "issue.comment.created"]),
     );
   });
+
+  it("serializes local writes so concurrent workspace fetches do not erase projects", async () => {
+    const store = await createStore();
+    const actor = {
+      userId: "user_1",
+      email: "founder@example.com",
+      organizationId: "org_1",
+    };
+
+    await Promise.all([
+      store.ensureWorkspace(actor),
+      store.createProject(actor, {
+        name: "Concurrent Audit",
+        workflowType: "support_assistant",
+        objective: "Verify local test persistence under app-shell refreshes.",
+        riskPreferences: ["Reliability"],
+        privacyMode: "redact_pii",
+      }),
+      store.ensureWorkspace(actor),
+    ]);
+
+    const state = await store.getWorkspaceState(actor);
+    expect(state.projects).toHaveLength(1);
+    expect(state.activeProject?.name).toBe("Concurrent Audit");
+  });
 });

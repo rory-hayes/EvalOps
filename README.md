@@ -44,6 +44,14 @@ supabase db advisors --linked
 
 The committed migration creates tenant-scoped tables, enables RLS, creates storage buckets, and applies storage policies for organization-prefixed object paths.
 
+Local Supabase ports are intentionally configured in the `554xx` range to avoid clashes with other projects:
+
+```bash
+supabase start
+supabase migration list --local
+supabase db lint --local --fail-on error
+```
+
 ## Local Development
 
 ```bash
@@ -84,6 +92,8 @@ vercel env add SUPABASE_SECRET_KEY production
 vercel env add OPENAI_API_KEY production
 vercel deploy --prod
 ```
+
+Do not deploy with `EVALOPS_TEST_MODE=1`; that mode is only for deterministic local and CI verification.
 
 ## Source Documents
 
