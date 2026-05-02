@@ -17,6 +17,7 @@
 - Migrations: `supabase/migrations/20260502103457_create_evalops_core.sql`, hardening migrations, and the Supabase Auth membership RLS migration.
 - RLS: enabled on public tenant tables.
 - Auth: Supabase `auth.users` is the identity source; tenant access is derived from `auth.uid()` and `organization_memberships`.
+- Email confirmations: disabled for the private MVP; signup returns an active Supabase session.
 - Storage: `evalops-trace-uploads` and `evalops-exports` buckets are private and organization-prefixed.
 - Server code uses `SUPABASE_SECRET_KEY` or `SUPABASE_SERVICE_ROLE_KEY`; these must never use `NEXT_PUBLIC_`.
 

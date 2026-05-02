@@ -41,7 +41,7 @@ supabase db advisors --linked
 
 The committed migrations create tenant-scoped tables, enable RLS, create storage buckets, and apply storage policies for organization-prefixed object paths. Authenticated access is based on Supabase `auth.uid()` plus durable organization membership records.
 
-For email confirmation links in Supabase Auth, set the Site URL to your Vercel production URL and add local/preview redirect URLs as needed. The app supports `/auth/confirm` for token-hash confirmation links and OAuth/code exchange redirects.
+Supabase Auth email confirmations are disabled for the private MVP, so new users can sign in immediately after signup. The Supabase Site URL is `https://evalops-copilot.vercel.app`; `/auth/confirm` remains available for future magic-link, email-confirmation, or OAuth/code exchange flows.
 
 Local Supabase ports are intentionally configured in the `554xx` range to avoid clashes with other projects:
 
