@@ -5,7 +5,7 @@ Milestone 1 has moved from a static shell to a production-like core flow.
 ## Built
 
 - Next.js App Router application with TypeScript and Tailwind.
-- Clerk-aware auth boundary with explicit local test mode fallback.
+- Supabase Auth boundary with explicit local test mode fallback.
 - Supabase migration for organizations, memberships, projects, trace imports, uploads, traces, eval cases, graders, issues, comments, jobs, exports, reports, and audit events.
 - Supabase Storage buckets and tenant-prefixed storage policies.
 - API routes for workspace state, project creation, trace upload/processing, issue review, eval reruns, prompt promotion, exports, and downloads.
@@ -14,8 +14,7 @@ Milestone 1 has moved from a static shell to a production-like core flow.
 
 ## Remaining Milestone 2 Work
 
-- Link and push migrations to the intended Supabase project.
-- Link and deploy to the intended Vercel project.
-- Add Clerk organization creation UI if the production Clerk tenant does not create organizations before app entry.
+- Complete deployed Supabase Auth smoke testing against the intended Vercel project.
+- Add richer organization invite/join workflows once private MVP users expand beyond owner workspaces.
 - Replace deterministic generation with OpenAI Responses API structured outputs in the existing service boundary.
 - Move long-running processing to Inngest when imports grow beyond browser-friendly files.

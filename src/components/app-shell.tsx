@@ -2,6 +2,7 @@
 
 import {
   ChevronDown,
+  LogOut,
   RefreshCw,
 } from "lucide-react";
 import Link from "next/link";
@@ -30,8 +31,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [label, setLabel] = useState("No project selected");
   const [initials, setInitials] = useState("EO");
   const [userLabel, setUserLabel] = useState("EU");
+  const authRoute = pathname.startsWith("/login") || pathname.startsWith("/auth/");
 
   useEffect(() => {
+    if (authRoute) return;
     let alive = true;
     fetch("/api/app-state", { cache: "no-store" })
       .then((response) => response.json())
@@ -47,7 +50,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       alive = false;
     };
-  }, [pathname]);
+  }, [pathname, authRoute]);
+
+  if (authRoute) {
+    return <>{children}</>;
+  }
 
   function refreshWorkspace() {
     window.dispatchEvent(new CustomEvent("evalops:refresh"));
@@ -80,7 +87,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="space-y-3 p-3">
           <div className="rounded-[8px] border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-600">
-            Production mode requires Clerk and Supabase env vars. Local E2E uses the explicit test store.
+            Production mode uses Supabase Auth, Postgres, and Storage. Local E2E keeps its explicit test store.
           </div>
         </div>
       </aside>
@@ -116,6 +123,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 {userLabel}
               </span>
             </div>
+            <form method="post" action="/logout">
+              <button aria-label="Sign out" className="h-11 w-11 rounded-[8px] border border-slate-200 bg-white shadow-sm">
+                <LogOut className="mx-auto h-4 w-4 text-slate-600" />
+              </button>
+            </form>
           </div>
           <nav className="flex gap-1 overflow-x-auto border-t border-slate-100 px-3 py-2 lg:hidden">
             {navItems.map((item) => {

@@ -2,7 +2,7 @@
 
 ## Implemented Core Flow
 
-1. A signed-in user is resolved through Clerk when configured.
+1. A signed-in user is resolved through Supabase Auth when configured.
 2. The backend creates or confirms a workspace, user profile, organization, and membership.
 3. A user creates a tenant-scoped project.
 4. A user uploads CSV, JSON, NDJSON, or TXT traces.
@@ -14,8 +14,9 @@
 
 ## Supabase
 
-- Migration: `supabase/migrations/20260502070158_create_evalops_core.sql`
+- Migrations: `supabase/migrations/20260502103457_create_evalops_core.sql`, hardening migrations, and the Supabase Auth membership RLS migration.
 - RLS: enabled on public tenant tables.
+- Auth: Supabase `auth.users` is the identity source; tenant access is derived from `auth.uid()` and `organization_memberships`.
 - Storage: `evalops-trace-uploads` and `evalops-exports` buckets are private and organization-prefixed.
 - Server code uses `SUPABASE_SECRET_KEY` or `SUPABASE_SERVICE_ROLE_KEY`; these must never use `NEXT_PUBLIC_`.
 
@@ -28,6 +29,7 @@ Applied migrations:
 1. `create_evalops_core`
 2. `harden_evalops_indexes_and_rls_policies`
 3. `optimize_evalops_rls_initplans`
+4. `switch_rls_to_supabase_memberships`
 
 Verification:
 
@@ -39,10 +41,7 @@ Verification:
 
 ## Deployment Status
 
-The local checkout is not linked to a Vercel project. The May 2, 2026 audit found:
-
-- Vercel CLI is authenticated, but this repo has no `.vercel/project.json` and the Vercel project list has no EvalOps project.
-- Production Clerk environment variables and the Supabase server secret are not present locally.
+The local checkout is linked to Vercel project `evalops-copilot`, connected to GitHub repo `rory-hayes/EvalOps`, production branch `main`.
 
 Use:
 
@@ -51,8 +50,6 @@ supabase link --project-ref bkjgpuhwqlbybpfkutyf
 supabase db push
 supabase db advisors --linked
 vercel link
-vercel env add NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY production
-vercel env add CLERK_SECRET_KEY production
 vercel env add NEXT_PUBLIC_SUPABASE_URL production
 vercel env add NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY production
 vercel env add SUPABASE_SECRET_KEY production
@@ -73,4 +70,4 @@ Do not deploy with `EVALOPS_TEST_MODE=1`; that mode is only for deterministic lo
 
 - OpenAI structured generation is still isolated behind schemas and deterministic processing. The app does not call OpenAI in the browser.
 - Inngest is not required for the deterministic MVP path; processing is synchronous in the API route but recorded as a durable job.
-- Test mode exists only behind `EVALOPS_TEST_MODE=1`; production mode requires real Clerk and Supabase credentials.
+- Test mode exists only behind `EVALOPS_TEST_MODE=1`; production mode requires real Supabase Auth and Supabase server credentials.

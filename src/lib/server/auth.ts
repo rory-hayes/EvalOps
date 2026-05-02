@@ -1,6 +1,8 @@
 import type { NextRequest } from "next/server";
 import { isTestMode } from "./env";
 import type { ActorContext } from "./types";
+import { hasSupabasePublicConfig } from "@/lib/supabase/config";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export class ApiError extends Error {
   constructor(
@@ -21,22 +23,27 @@ export async function getActorFromRequest(request: NextRequest): Promise<ActorCo
     };
   }
 
-  if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || !process.env.CLERK_SECRET_KEY) {
+  if (!hasSupabasePublicConfig()) {
     throw new ApiError(
       503,
-      "Authentication is not configured. Set Clerk environment variables or enable EVALOPS_TEST_MODE=1 for local test runs.",
+      "Authentication is not configured. Set Supabase auth environment variables or enable EVALOPS_TEST_MODE=1 for local test runs.",
       "auth_not_configured",
     );
   }
 
-  const { auth } = await import("@clerk/nextjs/server");
-  const session = await auth();
-  if (!session.userId) {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+
+  if (error || !user) {
     throw new ApiError(401, "Sign in required.", "unauthenticated");
   }
 
   return {
-    userId: session.userId,
-    organizationId: session.orgId || `org_${session.userId}`,
+    userId: user.id,
+    email: user.email,
+    organizationId: `org_${user.id}`,
   };
 }

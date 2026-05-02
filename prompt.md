@@ -274,7 +274,7 @@ Use:
 - TypeScript
 - Tailwind
 - shadcn/ui
-- Clerk
+- Supabase Auth
 - Supabase (Postgres + Storage)
 - Inngest
 - OpenAI Responses API + Structured Outputs
@@ -331,4 +331,3 @@ It is acceptable to use mocked AI data and mocked generation in Milestone 1 **if
 9. Reports UI
 10. Wire up mocked data
 11. Add real generation workflows in later milestones
-

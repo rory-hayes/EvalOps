@@ -1,0 +1,88 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
+import { hasSupabasePublicConfig } from "@/lib/supabase/config";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+
+export async function login(formData: FormData) {
+  if (!hasSupabasePublicConfig()) {
+    redirectWithError("Supabase authentication is not configured.");
+  }
+
+  const credentials = readCredentials(formData);
+  if (!credentials.ok) {
+    redirectWithError(credentials.error);
+  }
+
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.auth.signInWithPassword(credentials.data);
+
+  if (error) {
+    redirectWithError(error.message);
+  }
+
+  revalidatePath("/", "layout");
+  redirect(readSafeNextPath(formData) || "/projects");
+}
+
+export async function signup(formData: FormData) {
+  if (!hasSupabasePublicConfig()) {
+    redirectWithError("Supabase authentication is not configured.");
+  }
+
+  const credentials = readCredentials(formData);
+  if (!credentials.ok) {
+    redirectWithError(credentials.error);
+  }
+
+  const supabase = await createSupabaseServerClient();
+  const requestHeaders = await headers();
+  const origin = requestHeaders.get("origin") || process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+  const { data, error } = await supabase.auth.signUp({
+    ...credentials.data,
+    options: {
+      emailRedirectTo: `${origin}/auth/confirm`,
+    },
+  });
+
+  if (error) {
+    redirectWithError(error.message);
+  }
+
+  revalidatePath("/", "layout");
+  if (data.session) {
+    redirect(readSafeNextPath(formData) || "/projects");
+  }
+  redirectWithMessage("Check your email to confirm your account, then sign in.");
+}
+
+function readCredentials(formData: FormData) {
+  const email = String(formData.get("email") || "").trim().toLowerCase();
+  const password = String(formData.get("password") || "");
+
+  if (!email || !email.includes("@")) {
+    return { ok: false as const, error: "Enter a valid email address." };
+  }
+
+  if (password.length < 8) {
+    return { ok: false as const, error: "Password must be at least 8 characters." };
+  }
+
+  return { ok: true as const, data: { email, password } };
+}
+
+function readSafeNextPath(formData: FormData) {
+  const next = String(formData.get("next") || "");
+  if (!next.startsWith("/") || next.startsWith("//")) return "";
+  return next;
+}
+
+function redirectWithError(message: string): never {
+  redirect(`/login?error=${encodeURIComponent(message)}`);
+}
+
+function redirectWithMessage(message: string): never {
+  redirect(`/login?message=${encodeURIComponent(message)}`);
+}

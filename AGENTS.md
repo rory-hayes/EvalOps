@@ -53,7 +53,7 @@ Use the following defaults unless the repository already has a compatible altern
 - Supabase Storage
 
 ### Auth / orgs
-- Clerk with organizations
+- Supabase Auth with organisation membership records
 
 ### Async workflows
 - Inngest
@@ -294,4 +294,3 @@ When completing a task, report:
 - any assumptions made.
 
 Keep the report concise and useful.
-

@@ -5,8 +5,7 @@ EvalOps Copilot is a production-oriented private MVP for running an Eval Debt Au
 ## Stack
 
 - Next.js App Router, TypeScript, Tailwind CSS
-- Clerk auth and organizations
-- Supabase Postgres and Storage
+- Supabase Auth, Postgres, and Storage
 - Deterministic trace parser for CSV, JSON, NDJSON, and TXT imports
 - Vitest unit/integration tests and Playwright E2E tests
 
@@ -17,8 +16,6 @@ Copy `.env.example` to `.env.local`.
 For production-like development with real services, set:
 
 ```bash
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=...
-CLERK_SECRET_KEY=...
 NEXT_PUBLIC_SUPABASE_URL=...
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
 SUPABASE_SECRET_KEY=...
@@ -32,7 +29,7 @@ EVALOPS_TEST_MODE=1
 EVALOPS_TEST_STORE_PATH=.evalops
 ```
 
-Test mode uses a local durable store and local file persistence only. Production mode fails visibly if Clerk or Supabase server credentials are missing.
+Test mode uses a local durable store and local file persistence only. Production mode fails visibly if Supabase auth or server credentials are missing.
 
 ## Supabase Setup
 
@@ -42,7 +39,9 @@ supabase db push
 supabase db advisors --linked
 ```
 
-The committed migration creates tenant-scoped tables, enables RLS, creates storage buckets, and applies storage policies for organization-prefixed object paths.
+The committed migrations create tenant-scoped tables, enable RLS, create storage buckets, and apply storage policies for organization-prefixed object paths. Authenticated access is based on Supabase `auth.uid()` plus durable organization membership records.
+
+For email confirmation links in Supabase Auth, set the Site URL to your Vercel production URL and add local/preview redirect URLs as needed. The app supports `/auth/confirm` for token-hash confirmation links and OAuth/code exchange redirects.
 
 Local Supabase ports are intentionally configured in the `554xx` range to avoid clashes with other projects:
 
@@ -84,8 +83,6 @@ Link the project and set the env vars above:
 
 ```bash
 vercel link
-vercel env add NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY production
-vercel env add CLERK_SECRET_KEY production
 vercel env add NEXT_PUBLIC_SUPABASE_URL production
 vercel env add NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY production
 vercel env add SUPABASE_SECRET_KEY production

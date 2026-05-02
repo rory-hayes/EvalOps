@@ -16,8 +16,7 @@ The first target customer is a B2B SaaS or AI product team with a support assist
 - Next.js (App Router)
 - TypeScript
 - Tailwind CSS + shadcn/ui
-- Clerk for auth and organizations
-- Supabase Postgres + Storage
+- Supabase Auth, Postgres + Storage
 - Inngest for background workflows
 - OpenAI Responses API + Structured Outputs
 - Stripe for billing

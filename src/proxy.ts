@@ -1,16 +1,10 @@
-import { clerkMiddleware } from "@clerk/nextjs/server";
-import { NextResponse } from "next/server";
+import { type NextRequest } from "next/server";
+import { updateSession } from "@/lib/supabase/proxy";
 
-const hasClerkConfig =
-  Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) &&
-  Boolean(process.env.CLERK_SECRET_KEY);
-
-export default hasClerkConfig
-  ? clerkMiddleware()
-  : function proxy() {
-      return NextResponse.next();
-    };
+export async function proxy(request: NextRequest) {
+  return updateSession(request);
+}
 
 export const config = {
-  matcher: ["/((?!_next|.*\\..*).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)"],
 };
