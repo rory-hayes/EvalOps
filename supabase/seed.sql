@@ -1,0 +1,2 @@
+-- EvalOps Copilot does not seed customer data.
+-- Deterministic local E2E data is created through API calls under EVALOPS_TEST_MODE=1.

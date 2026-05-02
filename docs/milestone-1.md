@@ -1,25 +1,21 @@
 # EvalOps Copilot Milestone 1
 
-Milestone 1 implements the private MVP shell for the Eval Debt Audit workflow described in `prompt.md` and `AGENTS.md`.
+Milestone 1 has moved from a static shell to a production-like core flow.
 
 ## Built
 
 - Next.js App Router application with TypeScript and Tailwind.
-- Shared SaaS layout with left navigation, project switcher, search, date picker, and account controls.
-- Required MVP pages: Dashboard, Create Project, Trace Import, Eval Builder, Graders, Prompt Optimizer, Routing & Caching, Reports, and Settings.
-- Reusable domain data seeded from the PRD, with Zod schemas for trace imports, eval cases, graders, and audit readiness.
-- Service boundaries for Supabase, structured AI outputs, and the durable audit pipeline, ready for live credentials and Inngest functions in later milestones.
+- Clerk-aware auth boundary with explicit local test mode fallback.
+- Supabase migration for organizations, memberships, projects, trace imports, uploads, traces, eval cases, graders, issues, comments, jobs, exports, reports, and audit events.
+- Supabase Storage buckets and tenant-prefixed storage policies.
+- API routes for workspace state, project creation, trace upload/processing, issue review, eval reruns, prompt promotion, exports, and downloads.
+- Frontend pages connected to backend state with loading, empty, error, success, and retry paths.
+- Deterministic trace parser and eval artifact generator for testing the audit workflow without client-only success states.
 
-## Deliberate Milestone 1 Limits
+## Remaining Milestone 2 Work
 
-- Clerk, Supabase, Inngest, OpenAI, Stripe, Sentry, and PostHog are represented as installed dependencies or clear adapter boundaries, but live credentials are not required for local MVP review.
-- AI generation and eval execution are mocked with realistic seeded product data.
-- Third-party trace integrations are shown as disabled/coming soon affordances.
-
-## Next Milestone
-
-1. Add Clerk organization auth and project membership.
-2. Create Supabase migrations with RLS for the domain entities.
-3. Wire file upload to Supabase Storage and `trace.imported` Inngest events.
-4. Implement OpenAI Responses API calls for the structured generation schemas.
-5. Add export endpoints for PDF, JSON eval packs, and grader definitions.
+- Link and push migrations to the intended Supabase project.
+- Link and deploy to the intended Vercel project.
+- Add Clerk organization creation UI if the production Clerk tenant does not create organizations before app entry.
+- Replace deterministic generation with OpenAI Responses API structured outputs in the existing service boundary.
+- Move long-running processing to Inngest when imports grow beyond browser-friendly files.

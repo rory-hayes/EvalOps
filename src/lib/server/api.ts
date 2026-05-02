@@ -1,0 +1,57 @@
+import { randomUUID } from "node:crypto";
+import { NextResponse } from "next/server";
+import { ZodError } from "zod";
+import { ApiError } from "./auth";
+
+export async function handleApi<T>(handler: (correlationId: string) => Promise<T>) {
+  const correlationId = randomUUID();
+  try {
+    const data = await handler(correlationId);
+    return NextResponse.json({ ok: true, data, correlationId });
+  } catch (error) {
+    const status =
+      error instanceof ApiError
+        ? error.status
+        : error instanceof ZodError
+          ? 400
+          : 500;
+    const code =
+      error instanceof ApiError
+        ? error.code
+        : error instanceof ZodError
+          ? "validation_error"
+          : "internal_error";
+    const message =
+      error instanceof ZodError
+        ? "Request validation failed."
+        : error instanceof Error
+          ? error.message
+          : "Unexpected server error.";
+
+    if (status >= 500) {
+      console.error(JSON.stringify({ correlationId, code, message }));
+    }
+
+    return NextResponse.json(
+      {
+        ok: false,
+        error: {
+          code,
+          message,
+          correlationId,
+          issues: error instanceof ZodError ? error.issues : undefined,
+        },
+      },
+      { status },
+    );
+  }
+}
+
+export function csvResponse(content: string, fileName: string) {
+  return new Response(content, {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="${fileName.replace(/"/g, "")}"`,
+    },
+  });
+}
