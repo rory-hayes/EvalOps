@@ -156,7 +156,7 @@ export function WorkspaceApp({ view }: { view: View }) {
       ) : view === "eval-builder" ? (
         <EvalBuilderView state={state} busy={busy} mutate={mutate} />
       ) : view === "graders" ? (
-        <GradersView state={state} />
+        <GradersView state={state} busy={busy} mutate={mutate} />
       ) : view === "prompt-optimizer" ? (
         <PromptOptimizerView state={state} busy={busy} mutate={mutate} />
       ) : view === "routing-caching" ? (
@@ -164,7 +164,7 @@ export function WorkspaceApp({ view }: { view: View }) {
       ) : view === "reports" ? (
         <ReportsView state={state} busy={busy} mutate={mutate} />
       ) : (
-        <SettingsView state={state} />
+        <SettingsView state={state} busy={busy} mutate={mutate} />
       )}
     </>
   );
@@ -779,13 +779,37 @@ function EvalBuilderView({
   );
 }
 
-function GradersView({ state }: { state: WorkspaceState }) {
+function GradersView({
+  state,
+  busy,
+  mutate,
+}: {
+  state: WorkspaceState;
+  busy: string | null;
+  mutate: MutateFn;
+}) {
+  const [selectedId, setSelectedId] = useState(state.graders[0]?.id || "");
+  const selected = state.graders.find((grader) => grader.id === selectedId) || state.graders[0];
+
   return (
     <>
-      <PageHeader title="Graders" description="Persisted deterministic and LLM-judge grader definitions generated for this project." meta={<ProjectMeta state={state} />} />
+      <PageHeader
+        title="Graders"
+        description="Persisted deterministic and LLM-judge grader definitions generated for this project."
+        actions={
+          <Button variant="secondary" disabled>
+            <Plus className="h-4 w-4" />
+            Add grader
+          </Button>
+        }
+        meta={<ProjectMeta state={state} />}
+      />
       <div className="mb-4 grid gap-4 lg:grid-cols-3">
         <Card className="p-5">
           <h2 className="text-lg font-semibold text-slate-950">Threshold configuration</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            Pilot defaults apply across generated graders. Edit each grader below to pause weak definitions or update judge model notes.
+          </p>
           <div className="mt-4 space-y-4">
             {[
               ["Pass threshold", 82],
@@ -834,14 +858,36 @@ function GradersView({ state }: { state: WorkspaceState }) {
           </div>
         </Card>
       </div>
+      <Card className="mb-4 p-5">
+        {selected ? (
+          <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
+            <SelectField
+              label="Review grader"
+              value={selected.id}
+              onChange={setSelectedId}
+              options={state.graders.map((grader): [string, string] => [grader.id, grader.name])}
+            />
+            <GraderEditor key={selected.id} grader={selected} busy={busy} mutate={mutate} />
+          </div>
+        ) : (
+          <EmptyText text="Graders are created after the first successful import." />
+        )}
+      </Card>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {state.graders.map((grader) => (
           <Card key={grader.id} className="p-5">
             <div className="flex items-start justify-between gap-3">
               <h2 className="text-lg font-semibold text-slate-950">{grader.name}</h2>
-              <Badge tone={grader.health === "healthy" ? "green" : "amber"}>{grader.health}</Badge>
+              <div className="flex flex-col items-end gap-2">
+                <Badge tone={grader.active ? "blue" : "slate"}>{grader.active ? "active" : "paused"}</Badge>
+                <Badge tone={grader.health === "healthy" ? "green" : "amber"}>{grader.health}</Badge>
+              </div>
             </div>
             <p className="mt-3 text-sm leading-6 text-slate-600">{grader.description}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Badge tone="slate">{grader.type === "llm_judge" ? "LLM-as-judge" : "Deterministic"}</Badge>
+              {grader.model ? <Badge tone="blue">{grader.model}</Badge> : null}
+            </div>
             <div className="mt-4 rounded-[8px] bg-slate-50 p-3">
               <h3 className="text-sm font-semibold text-slate-900">Rubric</h3>
               <ul className="mt-2 space-y-1 text-sm leading-6 text-slate-600">
@@ -859,6 +905,77 @@ function GradersView({ state }: { state: WorkspaceState }) {
         {!state.graders.length ? <Card className="p-5"><EmptyText text="Graders are created after the first import." /></Card> : null}
       </div>
     </>
+  );
+}
+
+function GraderEditor({
+  grader,
+  busy,
+  mutate,
+}: {
+  grader: WorkspaceState["graders"][number];
+  busy: string | null;
+  mutate: MutateFn;
+}) {
+  const [descriptionDraft, setDescriptionDraft] = useState(grader.description);
+  const [modelDraft, setModelDraft] = useState(grader.model || "");
+  const [activeDraft, setActiveDraft] = useState(grader.active);
+
+  return (
+    <div>
+      <div className="grid gap-4 md:grid-cols-[1fr_220px]">
+        <label className="block">
+          <span className="text-sm font-semibold text-slate-700">Rubric description</span>
+          <textarea
+            aria-label="Grader description"
+            className="mt-2 min-h-28 w-full rounded-[7px] border border-slate-200 p-3 text-sm leading-6"
+            value={descriptionDraft}
+            onChange={(event) => setDescriptionDraft(event.target.value)}
+          />
+        </label>
+        <div className="space-y-3">
+          <label className="block">
+            <span className="text-sm font-semibold text-slate-700">Judge model</span>
+            <input
+              aria-label="Judge model"
+              className="mt-2 h-11 w-full rounded-[7px] border border-slate-200 px-3 text-sm"
+              value={modelDraft}
+              placeholder={grader.type === "deterministic" ? "Not required" : "gpt-5.5"}
+              onChange={(event) => setModelDraft(event.target.value)}
+            />
+          </label>
+          <CheckboxRow
+            checked={activeDraft}
+            onChange={setActiveDraft}
+            label="Active in audit runs"
+            detail="Paused graders remain visible for review but are not counted as active pilot checks."
+          />
+        </div>
+      </div>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Button
+          disabled={busy === grader.id || descriptionDraft.trim().length < 10}
+          onClick={() =>
+            mutate(grader.id, () =>
+              api(`/api/graders/${grader.id}`, {
+                method: "PATCH",
+                body: JSON.stringify({
+                  description: descriptionDraft,
+                  active: activeDraft,
+                  model: modelDraft.trim() || null,
+                }),
+              }),
+            )
+          }
+        >
+          {busy === grader.id ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          Save grader config
+        </Button>
+        <p className="text-xs leading-5 text-slate-500">
+          Changes persist immediately and are audit logged for pilot review.
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -1090,9 +1207,7 @@ function ReportsView({
         actions={
           <>
             <ExportButton state={state} busy={busy} mutate={mutate} />
-            <Button variant="secondary" disabled>
-              PDF coming soon
-            </Button>
+            <PdfExportButton state={state} busy={busy} mutate={mutate} />
           </>
         }
         meta={<ProjectMeta state={state} />}
@@ -1172,7 +1287,17 @@ function ReportsView({
   );
 }
 
-function SettingsView({ state }: { state: WorkspaceState }) {
+function SettingsView({
+  state,
+  busy,
+  mutate,
+}: {
+  state: WorkspaceState;
+  busy: string | null;
+  mutate: MutateFn;
+}) {
+  const project = state.activeProject;
+
   return (
     <>
       <PageHeader
@@ -1191,10 +1316,10 @@ function SettingsView({ state }: { state: WorkspaceState }) {
       <Card className="mb-4 p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <Badge tone="blue">Read-only in private MVP</Badge>
-            <h2 className="mt-3 text-lg font-semibold text-slate-950">Workspace settings are provisioned</h2>
+            <Badge tone="blue">Private pilot controls</Badge>
+            <h2 className="mt-3 text-lg font-semibold text-slate-950">Workspace settings are provisioned; project privacy is editable</h2>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-              Organization name, membership role, and storage target are fixed by authentication and deployment configuration for this milestone. Editable organization controls can be added once the private audit workflow is validated.
+              Organization name, membership role, and storage target are fixed by authentication and deployment configuration for this milestone. Project privacy posture and risk tags persist here and are audit logged.
             </p>
           </div>
         </div>
@@ -1215,26 +1340,119 @@ function SettingsView({ state }: { state: WorkspaceState }) {
           <ReadOnlySetting label="Trace storage target" value="Supabase Storage" />
         </div>
       </Card>
-      <Card className="mt-4 p-5">
-        <h2 className="text-lg font-semibold text-slate-950">Privacy controls</h2>
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <CheckboxRow checked onChange={() => undefined} label="PII redaction" detail="Enabled by default for uploaded traces and generated review artifacts." />
-          <CheckboxRow checked onChange={() => undefined} label="Short raw-data retention" detail="Private MVP target: 14 days for raw trace review, then derived artifacts remain." />
-          <CheckboxRow checked={state.activeProject?.privacyMode === "derived_only"} onChange={() => undefined} label="Store derived evals only" detail="Available during project setup; editable controls land after the audit workflow is validated." />
-          <ReadOnlySetting label="Data residency" value="EU/US selectable placeholder" />
-        </div>
-      </Card>
+      <SettingsPrivacyCard
+        key={`${project?.id || "no-project"}-${project?.updatedAt || ""}`}
+        project={project}
+        busy={busy}
+        mutate={mutate}
+      />
       <Card className="mt-4 p-5">
         <h2 className="text-lg font-semibold text-slate-950">Data controls</h2>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-          MVP-safe affordances for export and deletion. The CSV eval-pack export is live; full project export and deletion can be wired to audited backend jobs next.
+          Live exports are generated from persisted audit artifacts. Full project export and deletion are intentionally gated until they run through audited background jobs.
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
-          <Button variant="secondary">Export project data</Button>
-          <Button variant="danger">Delete project data</Button>
+          <ExportButton state={state} busy={busy} mutate={mutate} />
+          <PdfExportButton state={state} busy={busy} mutate={mutate} />
+          <Button variant="secondary" disabled>
+            Full project export
+          </Button>
+          <Button variant="danger" disabled>
+            Delete project data
+          </Button>
         </div>
       </Card>
     </>
+  );
+}
+
+function SettingsPrivacyCard({
+  project,
+  busy,
+  mutate,
+}: {
+  project: WorkspaceState["activeProject"];
+  busy: string | null;
+  mutate: MutateFn;
+}) {
+  const [privacyMode, setPrivacyMode] = useState(project?.privacyMode || "redact_pii");
+  const [riskPreferences, setRiskPreferences] = useState(project?.riskPreferences.join(", ") || "");
+
+  return (
+    <Card className="mt-4 p-5">
+      <h2 className="text-lg font-semibold text-slate-950">Privacy controls</h2>
+      <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+        These controls affect future imports and generated artifacts for the selected project. Existing exports remain audit records.
+      </p>
+      <div className="mt-4 grid gap-4 lg:grid-cols-[320px_1fr]">
+        <SelectField
+          label="Privacy posture"
+          value={privacyMode}
+          onChange={(value) => setPrivacyMode(value as typeof privacyMode)}
+          options={[
+            ["redact_pii", "Redact likely PII"],
+            ["short_retention", "Short raw-data retention"],
+            ["derived_only", "Store derived evals only"],
+          ]}
+        />
+        <label className="block">
+          <span className="text-sm font-semibold text-slate-700">Project risks and goals</span>
+          <textarea
+            aria-label="Project risks and goals"
+            className="mt-2 min-h-24 w-full rounded-[7px] border border-slate-200 p-3 text-sm leading-6"
+            value={riskPreferences}
+            onChange={(event) => setRiskPreferences(event.target.value)}
+          />
+          <span className="mt-2 block text-xs leading-5 text-slate-500">
+            Comma-separated tags drive audit copy, empty-state guidance, and generated recommendation focus.
+          </span>
+        </label>
+      </div>
+      <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        <CheckboxRow
+          checked={privacyMode === "redact_pii"}
+          onChange={(checked) => checked && setPrivacyMode("redact_pii")}
+          label="PII redaction"
+          detail="Detect likely email, card, phone, and token values before review."
+        />
+        <CheckboxRow
+          checked={privacyMode === "short_retention"}
+          onChange={(checked) => checked && setPrivacyMode("short_retention")}
+          label="Short raw-data retention"
+          detail="Private pilot target: 14 days for raw trace review, then derived artifacts remain."
+        />
+        <CheckboxRow
+          checked={privacyMode === "derived_only"}
+          onChange={(checked) => checked && setPrivacyMode("derived_only")}
+          label="Store derived evals only"
+          detail="Keep generated evals, graders, reports, and safe metadata instead of raw trace content where possible."
+        />
+      </div>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Button
+          disabled={!project || busy === "settings"}
+          onClick={() =>
+            mutate("settings", () => {
+              if (!project) throw new Error("Create a project before saving privacy settings.");
+              return api(`/api/projects/${project.id}/settings`, {
+                method: "PATCH",
+                body: JSON.stringify({
+                  privacyMode,
+                  riskPreferences: riskPreferences
+                    .split(",")
+                    .map((item) => item.trim())
+                    .filter(Boolean),
+                }),
+              });
+            }, project?.id)
+          }
+        >
+          {busy === "settings" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          Save privacy settings
+        </Button>
+        <ReadOnlySetting label="Data residency" value="Deployment region policy" />
+      </div>
+    </Card>
   );
 }
 
@@ -1427,6 +1645,35 @@ function ExportButton({
   ) : null;
 }
 
+function PdfExportButton({
+  state,
+  busy,
+  mutate,
+}: {
+  state: WorkspaceState;
+  busy: string | null;
+  mutate: MutateFn;
+}) {
+  return state.activeProject ? (
+    <Button
+      variant="secondary"
+      disabled={busy === "export-pdf" || !state.reports.length}
+      onClick={() =>
+        mutate("export-pdf", async () => {
+          const record = await api<{ id: string }>(`/api/projects/${state.activeProject?.id}/exports`, {
+            method: "POST",
+            body: JSON.stringify({ type: "audit_report_pdf" }),
+          });
+          window.location.href = `/api/exports/${record.id}/download`;
+        })
+      }
+    >
+      <Download className="h-4 w-4" />
+      Export PDF
+    </Button>
+  ) : null;
+}
+
 function formatBytes(value: number) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${Math.round(value / 102.4) / 10} KB`;
@@ -1477,7 +1724,10 @@ function candidatePromptBody(title: string) {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = init?.body instanceof FormData ? undefined : { "content-type": "application/json" };
+  const isFormDataBody =
+    init?.body instanceof FormData ||
+    Object.prototype.toString.call(init?.body) === "[object FormData]";
+  const headers = isFormDataBody || init?.body === undefined ? undefined : { "content-type": "application/json" };
   const response = await fetch(path, { ...init, headers: { ...headers, ...init?.headers } });
   const payload = (await response.json()) as ApiEnvelope<T>;
   if (!payload.ok) throw new Error(payload.error.message);

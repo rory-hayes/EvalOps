@@ -77,9 +77,19 @@ export type ProcessingJob = {
   organizationId: string;
   projectId: string;
   traceImportId: string;
-  action: "trace_import";
+  action:
+    | "trace_import"
+    | "pii_redaction"
+    | "intent_generation"
+    | "eval_generation"
+    | "grader_generation"
+    | "baseline_run"
+    | "prompt_optimization"
+    | "routing_analysis"
+    | "report_generation";
   status: "queued" | "running" | "completed" | "failed";
   errorMessage?: string;
+  metadata?: Record<string, unknown>;
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
@@ -224,7 +234,7 @@ export type ExportRecord = {
   id: string;
   organizationId: string;
   projectId: string;
-  type: "eval_pack_csv" | "issues_csv" | "audit_report_csv";
+  type: "eval_pack_csv" | "issues_csv" | "audit_report_csv" | "audit_report_pdf";
   status: "generated" | "failed";
   storageBucket: string;
   storagePath: string;
@@ -280,11 +290,26 @@ export type CreateProjectInput = {
   privacyMode: Project["privacyMode"];
 };
 
+export type UpdateProjectSettingsInput = {
+  privacyMode?: Project["privacyMode"];
+  riskPreferences?: string[];
+};
+
 export type CreateTraceImportInput = {
   projectId: string;
   fileName: string;
   contentType: string;
   text: string;
+};
+
+export type ProcessTraceImportInput = {
+  projectId: string;
+  traceImportId: string;
+  jobId?: string;
+};
+
+export type CreateExportInput = {
+  type?: ExportRecord["type"];
 };
 
 export type UpdateIssueInput = {
@@ -293,16 +318,29 @@ export type UpdateIssueInput = {
   comment?: string;
 };
 
+export type UpdateGraderInput = {
+  graderId: string;
+  description?: string;
+  active?: boolean;
+  model?: string | null;
+};
+
 export type EvalOpsStore = {
   ensureWorkspace(actor: ActorContext): Promise<WorkspaceState>;
   getWorkspaceState(actor: ActorContext, projectId?: string): Promise<WorkspaceState>;
   getProjectState(actor: ActorContext, projectId: string): Promise<WorkspaceState>;
   createProject(actor: ActorContext, input: CreateProjectInput): Promise<Project>;
+  updateProjectSettings(actor: ActorContext, projectId: string, input: UpdateProjectSettingsInput): Promise<Project>;
   createTraceImport(actor: ActorContext, input: CreateTraceImportInput): Promise<{
     importRecord: TraceImport;
     job: ProcessingJob;
   }>;
+  processTraceImport(actor: ActorContext, input: ProcessTraceImportInput): Promise<{
+    importRecord: TraceImport;
+    job: ProcessingJob;
+  }>;
   updateIssue(actor: ActorContext, input: UpdateIssueInput): Promise<StoredIssue>;
+  updateGrader(actor: ActorContext, input: UpdateGraderInput): Promise<StoredGrader>;
   updateEvalCase(actor: ActorContext, input: {
     caseId: string;
     userInput?: string;
@@ -310,8 +348,8 @@ export type EvalOpsStore = {
     acceptanceCriteria?: string[];
     status?: EvalCase["status"];
   }): Promise<StoredEvalCase>;
-  createExport(actor: ActorContext, projectId: string): Promise<ExportRecord>;
-  getExport(actor: ActorContext, exportId: string): Promise<{ record: ExportRecord; content: string }>;
+  createExport(actor: ActorContext, projectId: string, input?: CreateExportInput): Promise<ExportRecord>;
+  getExport(actor: ActorContext, exportId: string): Promise<{ record: ExportRecord; content: string | Uint8Array }>;
   rerunEvaluation(actor: ActorContext, projectId: string): Promise<EvalRun>;
   promotePromptCandidate(actor: ActorContext, projectId: string, candidateId: string): Promise<PromptVersion>;
 };

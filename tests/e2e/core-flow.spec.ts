@@ -44,6 +44,12 @@ test("user completes Eval Debt Audit flow end to end", async ({ page }) => {
   await page.goto("/graders");
   await expect(page.getByText("Threshold configuration")).toBeVisible();
   await expect(page.getByText("Calibration reference set")).toBeVisible();
+  await expect(page.getByLabel("Grader description")).toBeVisible();
+  await page.getByLabel("Grader description").fill("Score escalation quality against the paid pilot handoff rubric.");
+  await page.getByLabel("Judge model").fill("gpt-5.5");
+  await page.getByLabel("Active in audit runs").uncheck();
+  await page.getByRole("button", { name: /save grader config/i }).click();
+  await expect(page.getByText("paused").first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Rubric", exact: true }).first()).toBeVisible();
 
   await page.goto("/reports");
@@ -51,9 +57,12 @@ test("user completes Eval Debt Audit flow end to end", async ({ page }) => {
   await expect(page.getByText("Executive summary")).toBeVisible();
   await expect(page.getByText("Baseline scorecard")).toBeVisible();
   await expect(page.getByText("Business impact opportunities")).toBeVisible();
-  await expect(page.getByRole("button", { name: /PDF coming soon/i })).toBeDisabled();
+  const pdfDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: /export pdf/i }).click();
+  const pdfDownload = await pdfDownloadPromise;
+  expect(pdfDownload.suggestedFilename()).toContain("audit-report.pdf");
   await expect(page.getByText("issue.resolved")).toBeVisible();
-  await expect(page.getByText("export.generated")).toBeVisible();
+  await expect(page.getByText("export.generated").first()).toBeVisible();
 
   await page.goto("/prompt-optimizer");
   await expect(page.getByText("Likely prompt issues")).toBeVisible();
@@ -70,10 +79,15 @@ test("user completes Eval Debt Audit flow end to end", async ({ page }) => {
 
   await page.goto("/settings");
   await expect(page.getByText("PII redaction")).toBeVisible();
-  await expect(page.getByText("Short raw-data retention")).toBeVisible();
-  await expect(page.getByText("Store derived evals only")).toBeVisible();
+  await expect(page.locator("span").filter({ hasText: /^Short raw-data retention$/ })).toBeVisible();
+  await expect(page.locator("span").filter({ hasText: /^Store derived evals only$/ })).toBeVisible();
   await expect(page.getByText("Data residency")).toBeVisible();
-  await expect(page.getByRole("button", { name: /Export project data/i })).toBeVisible();
+  await page.getByLabel("Privacy posture").selectOption("derived_only");
+  await page.getByLabel("Project risks and goals").fill("Billing, Escalation, Privacy, Paid pilot");
+  await page.getByRole("button", { name: /save privacy settings/i }).click();
+  await expect(page.getByLabel("Privacy posture")).toHaveValue("derived_only");
+  await expect(page.getByRole("button", { name: /Export CSV/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Full project export/i })).toBeDisabled();
   await expect(page.getByRole("button", { name: /Delete project data/i })).toBeVisible();
   await expect(page.getByRole("main").getByRole("button", { name: "Sign out" })).toBeVisible();
 });

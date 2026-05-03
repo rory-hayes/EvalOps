@@ -6,7 +6,11 @@ EvalOps Copilot is a production-oriented private MVP for running an Eval Debt Au
 
 - Next.js App Router, TypeScript, Tailwind CSS
 - Supabase Auth, Postgres, and Storage
-- Deterministic trace parser for CSV, JSON, NDJSON, and TXT imports
+- Inngest-backed trace import processing
+- OpenAI Responses API structured audit generation outside test mode
+- Deterministic trace parser for explicit local test mode
+- CSV eval-pack export and PDF audit report export
+- Editable grader configuration and project privacy/risk settings for paid-pilot review
 - Vitest unit/integration tests and Playwright E2E tests
 
 ## Environment
@@ -20,6 +24,9 @@ NEXT_PUBLIC_SUPABASE_URL=...
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
 SUPABASE_SECRET_KEY=...
 OPENAI_API_KEY=...
+OPENAI_AUDIT_MODEL=gpt-5.5
+INNGEST_EVENT_KEY=...
+INNGEST_SIGNING_KEY=...
 ```
 
 For deterministic local E2E without live credentials, explicitly set:
@@ -29,7 +36,7 @@ EVALOPS_TEST_MODE=1
 EVALOPS_TEST_STORE_PATH=.evalops
 ```
 
-Test mode uses a local durable store and local file persistence only. Production mode fails visibly if Supabase auth or server credentials are missing.
+Test mode uses a local durable store, local file persistence, and deterministic generation only. Production mode fails visibly if Supabase, OpenAI, or Inngest credentials are missing.
 
 ## Supabase Setup
 
@@ -87,6 +94,9 @@ vercel env add NEXT_PUBLIC_SUPABASE_URL production
 vercel env add NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY production
 vercel env add SUPABASE_SECRET_KEY production
 vercel env add OPENAI_API_KEY production
+vercel env add OPENAI_AUDIT_MODEL production
+vercel env add INNGEST_EVENT_KEY production
+vercel env add INNGEST_SIGNING_KEY production
 vercel deploy --prod
 ```
 

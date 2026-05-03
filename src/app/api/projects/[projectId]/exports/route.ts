@@ -1,6 +1,7 @@
 import { type NextRequest } from "next/server";
 import { getActorFromRequest } from "@/lib/server/auth";
-import { handleApi } from "@/lib/server/api";
+import { handleApi, readJsonBody } from "@/lib/server/api";
+import { createExportRequestSchema } from "@/lib/server/schemas";
 import { getEvalOpsStore } from "@/lib/server/store";
 
 export async function POST(
@@ -11,6 +12,10 @@ export async function POST(
     const actor = await getActorFromRequest(request);
     const { projectId } = await params;
     const store = await getEvalOpsStore();
-    return store.createExport(actor, projectId);
+    const hasJsonBody = request.headers.get("content-type")?.includes("application/json");
+    const input = hasJsonBody
+      ? createExportRequestSchema.parse(await readJsonBody(request))
+      : createExportRequestSchema.parse({});
+    return store.createExport(actor, projectId, input);
   });
 }

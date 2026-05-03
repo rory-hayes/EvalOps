@@ -4,15 +4,18 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { TraceImport } from "../domain/audit";
 import {
   buildCsvExport,
-  buildEvalArtifacts,
   inferTraceSourceType,
   parseTraceFile,
 } from "../domain/trace-processing";
+import { generateAuditArtifacts, type AuditArtifacts } from "@/lib/ai/openai-audit-generation";
+import { buildAuditReportPdf } from "./audit-report-pdf";
+import { ApiError } from "./auth";
 import { createSupabaseAdminClient } from "./supabase-admin";
 import type {
   ActorContext,
   AuditEvent,
   CacheRecommendation,
+  CreateExportInput,
   CreateProjectInput,
   CreateTraceImportInput,
   EvalOpsStore,
@@ -23,6 +26,7 @@ import type {
   Organization,
   OrganizationMembership,
   ProcessingJob,
+  ProcessTraceImportInput,
   Project,
   PromptCandidate,
   PromptVersion,
@@ -32,6 +36,8 @@ import type {
   StoredGrader,
   StoredIssue,
   StoredTrace,
+  UpdateGraderInput,
+  UpdateProjectSettingsInput,
   UploadedFile,
   UserProfile,
   WorkspaceState,
@@ -155,13 +161,44 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
     return mapProject(data);
   }
 
+  async updateProjectSettings(actor: ActorContext, projectId: string, input: UpdateProjectSettingsInput) {
+    const state = await this.getProjectState(actor, projectId);
+    const project = state.activeProject;
+    if (!project) throw new Error("Project not found for this organization.");
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (input.privacyMode !== undefined) patch.privacy_mode = input.privacyMode;
+    if (input.riskPreferences !== undefined) patch.risk_preferences = normalizeList(input.riskPreferences);
+    const { data } = await checked(
+      this.db
+        .from("projects")
+        .update(patch)
+        .eq("organization_id", project.organizationId)
+        .eq("id", project.id)
+        .select("*")
+        .single(),
+    );
+    await this.audit(actor, project.organizationId, "project", project.id, "project.settings.updated", {
+      privacyMode: data.privacy_mode,
+      riskPreferenceCount: (data.risk_preferences || []).length,
+    });
+    return mapProject(data);
+  }
+
   async createTraceImport(actor: ActorContext, input: CreateTraceImportInput) {
-    const state = await this.getProjectState(actor, input.projectId);
+    const state: WorkspaceState = await this.getProjectState(actor, input.projectId);
     const project = state.activeProject;
     if (!project) throw new Error("Project not found for this organization.");
     const now = new Date().toISOString();
     const traceImportId = id("imp");
     const checksum = createHash("sha256").update(input.text).digest("hex");
+    const duplicate = state.uploadedFiles.find((item) => item.checksum === checksum);
+    if (duplicate) {
+      throw new ApiError(
+        409,
+        `This file has already been imported for this project as ${duplicate.fileName}.`,
+        "duplicate_upload",
+      );
+    }
     const storagePath = `${project.organizationId}/${project.id}/${traceImportId}/${input.fileName}`;
     const source = sourceFromFileName(input.fileName, input.contentType);
     const importRecord: TraceImport = {
@@ -182,9 +219,9 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       projectId: project.id,
       traceImportId,
       action: "trace_import",
-      status: "running",
+      status: "queued",
+      metadata: { fileName: input.fileName, checksum },
       createdAt: now,
-      startedAt: now,
     };
 
     const uploadedFile: UploadedFile = {
@@ -231,22 +268,76 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       storagePath,
       sizeBytes: uploadedFile.sizeBytes,
     });
-    await this.audit(actor, project.organizationId, "processing_job", job.id, "file.processing_started", {
+    await this.audit(actor, project.organizationId, "processing_job", job.id, "file.processing_queued", {
       traceImportId,
     });
 
+    return { importRecord, job };
+  }
+
+  async processTraceImport(actor: ActorContext, input: ProcessTraceImportInput) {
+    const state: WorkspaceState = await this.getProjectState(actor, input.projectId);
+    const project = state.activeProject;
+    if (!project) throw new Error("Project not found for this organization.");
+    const importRecord = state.traceImports.find((item) => item.id === input.traceImportId);
+    if (!importRecord) throw new Error("Trace import not found for this organization.");
+    const uploadedFile = state.uploadedFiles.find((item) => item.traceImportId === importRecord.id);
+    if (!uploadedFile) throw new Error("Uploaded file not found for this trace import.");
+    const job =
+      state.processingJobs.find((item) => item.id === input.jobId) ||
+      state.processingJobs.find((item) => item.traceImportId === importRecord.id);
+    if (!job) throw new Error("Processing job not found for this trace import.");
+
+    if (importRecord.status === "completed" && job.status === "completed") {
+      return { importRecord, job };
+    }
+
+    job.status = "running";
+    job.startedAt = job.startedAt || new Date().toISOString();
+    job.errorMessage = undefined;
+    job.metadata = { ...(job.metadata || {}), sourceTraceImportId: importRecord.id };
+    await checked(
+      this.db
+        .from("processing_jobs")
+        .update(toProcessingJobRow(job))
+        .eq("organization_id", project.organizationId)
+        .eq("id", job.id),
+    );
+    await this.audit(actor, project.organizationId, "processing_job", job.id, "file.processing_started", {
+      traceImportId: importRecord.id,
+    });
+
     try {
-      const parsed = parseTraceFile(input);
+      const downloaded = await checked(
+        this.db.storage.from(uploadedFile.storageBucket).download(uploadedFile.storagePath),
+      );
+      const text = await downloaded.data.text();
+      const parsed = parseTraceFile({
+        fileName: uploadedFile.fileName,
+        contentType: uploadedFile.contentType,
+        text,
+      });
       const traces: StoredTrace[] = parsed.map((trace) => ({
         ...trace,
         id: id("trace"),
         organizationId: project.organizationId,
         projectId: project.id,
-        traceImportId,
+        traceImportId: importRecord.id,
       }));
-      await checked(this.db.from("traces").insert(traces.map(toTraceRow)));
-      const artifacts = buildEvalArtifacts({ projectId: project.id, traces: parsed });
-      await this.insertArtifacts(actor, project, artifacts, traces);
+      await checked(
+        this.db
+          .from("traces")
+          .delete()
+          .eq("organization_id", project.organizationId)
+          .eq("project_id", project.id)
+          .eq("trace_import_id", importRecord.id),
+      );
+      if (traces.length) await checked(this.db.from("traces").insert(traces.map(toTraceRow)));
+      const artifacts = await generateAuditArtifacts({ project, traces });
+      await this.insertArtifacts(actor, project, artifacts, traces, {
+        traceImportId: importRecord.id,
+        jobId: job.id,
+      });
       const primaryIntent = mostCommon(traces.map((trace) => trace.intent)) || "General Support";
       importRecord.traces = traces.length;
       importRecord.rows = traces.length;
@@ -260,6 +351,7 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
           : "low";
       job.status = "completed";
       job.completedAt = new Date().toISOString();
+      job.metadata = { ...(job.metadata || {}), generation: artifacts.generationMetadata };
       await checked(
         this.db
           .from("trace_imports")
@@ -271,12 +363,20 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
             primary_intent: importRecord.primaryIntent,
             risk_level: importRecord.riskLevel,
           })
-          .eq("id", traceImportId),
+          .eq("organization_id", project.organizationId)
+          .eq("id", importRecord.id),
       );
-      await checked(this.db.from("processing_jobs").update(toProcessingJobRow(job)).eq("id", job.id));
+      await checked(
+        this.db
+          .from("processing_jobs")
+          .update(toProcessingJobRow(job))
+          .eq("organization_id", project.organizationId)
+          .eq("id", job.id),
+      );
       await this.audit(actor, project.organizationId, "processing_job", job.id, "file.processing_completed", {
         traceCount: traces.length,
         issueCount: artifacts.issues.length,
+        generation: artifacts.generationMetadata,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown processing error";
@@ -289,9 +389,16 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
         this.db
           .from("trace_imports")
           .update({ status: "failed", redaction_status: "failed" })
-          .eq("id", traceImportId),
+          .eq("organization_id", project.organizationId)
+          .eq("id", importRecord.id),
       );
-      await checked(this.db.from("processing_jobs").update(toProcessingJobRow(job)).eq("id", job.id));
+      await checked(
+        this.db
+          .from("processing_jobs")
+          .update(toProcessingJobRow(job))
+          .eq("organization_id", project.organizationId)
+          .eq("id", job.id),
+      );
       await this.audit(
         actor,
         project.organizationId,
@@ -351,6 +458,29 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
     return mapIssue(data);
   }
 
+  async updateGrader(actor: ActorContext, input: UpdateGraderInput) {
+    const organizationId = actor.organizationId || `org_${actor.userId}`;
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (input.description !== undefined) patch.description = input.description.trim();
+    if (input.active !== undefined) patch.active = input.active;
+    if (input.model !== undefined) patch.model = input.model?.trim() || null;
+    const { data } = await checked(
+      this.db
+        .from("graders")
+        .update(patch)
+        .eq("organization_id", organizationId)
+        .eq("id", input.graderId)
+        .select("*")
+        .single(),
+    );
+    if (!data) throw new Error("Grader not found for this organization.");
+    await this.audit(actor, organizationId, "grader", input.graderId, "grader.updated", {
+      active: data.active,
+      model: data.model || null,
+    });
+    return mapGrader(data);
+  }
+
   async updateEvalCase(actor: ActorContext, input: Parameters<EvalOpsStore["updateEvalCase"]>[1]) {
     const organizationId = actor.organizationId || `org_${actor.userId}`;
     const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
@@ -372,29 +502,38 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
     return mapEvalCase(data);
   }
 
-  async createExport(actor: ActorContext, projectId: string) {
+  async createExport(actor: ActorContext, projectId: string, input: CreateExportInput = {}) {
     const state: WorkspaceState = await this.getProjectState(actor, projectId);
     const project = state.activeProject;
     if (!project) throw new Error("Project not found for this organization.");
-    const content = buildCsvExport({ evalCases: state.evalCases, issues: state.issues });
+    const type = input.type || "eval_pack_csv";
+    const content =
+      type === "audit_report_pdf"
+        ? await buildAuditReportPdfOrThrow(state)
+        : buildCsvExport({ evalCases: state.evalCases, issues: state.issues });
+    const contentType = type === "audit_report_pdf" ? "application/pdf" : "text/csv";
+    const fileName =
+      type === "audit_report_pdf"
+        ? `${slugify(project.name)}-audit-report.pdf`
+        : `${slugify(project.name)}-eval-pack.csv`;
     const exportRecord: ExportRecord = {
       id: id("exp"),
       organizationId: project.organizationId,
       projectId: project.id,
-      type: "eval_pack_csv",
+      type,
       status: "generated",
       storageBucket: "evalops-exports",
-      storagePath: `${project.organizationId}/${project.id}/eval-pack-${Date.now()}.csv`,
-      fileName: `${slugify(project.name)}-eval-pack.csv`,
-      contentType: "text/csv",
-      sizeBytes: Buffer.byteLength(content),
+      storagePath: `${project.organizationId}/${project.id}/${Date.now()}-${fileName}`,
+      fileName,
+      contentType,
+      sizeBytes: typeof content === "string" ? Buffer.byteLength(content) : content.byteLength,
       createdAt: new Date().toISOString(),
     };
     await checked(
       this.db.storage
         .from("evalops-exports")
-        .upload(exportRecord.storagePath, Buffer.from(content), {
-          contentType: "text/csv",
+        .upload(exportRecord.storagePath, typeof content === "string" ? Buffer.from(content) : Buffer.from(content), {
+          contentType,
           upsert: false,
         }),
     );
@@ -414,7 +553,10 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
     if (!data) throw new Error("Export not found for this organization.");
     const record = mapExport(data);
     const downloaded = await checked(this.db.storage.from(record.storageBucket).download(record.storagePath));
-    const content = await downloaded.data.text();
+    const content =
+      record.contentType === "application/pdf"
+        ? new Uint8Array(await downloaded.data.arrayBuffer())
+        : await downloaded.data.text();
     return { record, content };
   }
 
@@ -533,10 +675,14 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
   private async insertArtifacts(
     actor: ActorContext,
     project: Project,
-    artifacts: ReturnType<typeof buildEvalArtifacts>,
+    artifacts: AuditArtifacts,
     traces: StoredTrace[],
+    provenance?: { traceImportId: string; jobId: string },
   ) {
     const now = new Date().toISOString();
+    const provenanceMetadata = provenance
+      ? { sourceJobId: provenance.jobId, sourceTraceImportId: provenance.traceImportId }
+      : {};
     const evalCases = artifacts.evalCases.map((evalCase, index) => ({
       ...evalCase,
       organizationId: project.organizationId,
@@ -587,7 +733,15 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       completedAt: now,
     };
     await checked(this.db.from("eval_runs").insert(toEvalRunRow(run)));
-    const clusters = buildFailureClusters(project, issues, now);
+    const clusters = artifacts.failureClusters?.length
+      ? artifacts.failureClusters.map((cluster) => ({
+          ...cluster,
+          id: id("cluster"),
+          organizationId: project.organizationId,
+          projectId: project.id,
+          createdAt: now,
+        }))
+      : buildFailureClusters(project, issues, now);
     if (clusters.length) await checked(this.db.from("failure_clusters").insert(clusters.map(toFailureClusterRow)));
     const report: Report = {
       id: id("report"),
@@ -605,22 +759,92 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
         this.audit(actor, project.organizationId, "eval_case", item.id, "extraction_result.created", {
           intent: item.intent,
           status: item.status,
+          ...provenanceMetadata,
         }),
       ),
       ...issues.map((item) =>
         this.audit(actor, project.organizationId, "issue", item.id, "issue.created", {
           severity: item.severity,
           status: item.status,
+          ...provenanceMetadata,
         }),
       ),
       this.audit(actor, project.organizationId, "eval_run", run.id, "review_rule.executed", {
         totalCases: run.totalCases,
         passRate: run.passRate,
+        ...provenanceMetadata,
       }),
       this.audit(actor, project.organizationId, "report", report.id, "report.generated", {
         readinessScore: report.readinessScore,
+        ...provenanceMetadata,
       }),
     ]);
+    if (artifacts.promptCandidates?.length) {
+      await checked(
+        this.db
+          .from("prompt_candidates")
+          .delete()
+          .eq("organization_id", project.organizationId)
+          .eq("project_id", project.id),
+      );
+      await checked(
+        this.db.from("prompt_candidates").insert(
+          artifacts.promptCandidates.map((candidate) =>
+            toPromptCandidateRow({
+              ...candidate,
+              id: id("cand"),
+              organizationId: project.organizationId,
+              projectId: project.id,
+              createdAt: now,
+            }),
+          ),
+        ),
+      );
+    }
+    if (artifacts.routingRules?.length) {
+      await checked(
+        this.db
+          .from("routing_rules")
+          .delete()
+          .eq("organization_id", project.organizationId)
+          .eq("project_id", project.id),
+      );
+      await checked(
+        this.db.from("routing_rules").insert(
+          artifacts.routingRules.map((rule) =>
+            toRoutingRuleRow({
+              ...rule,
+              id: id("route"),
+              organizationId: project.organizationId,
+              projectId: project.id,
+              createdAt: now,
+            }),
+          ),
+        ),
+      );
+    }
+    if (artifacts.cacheRecommendations?.length) {
+      await checked(
+        this.db
+          .from("cache_recommendations")
+          .delete()
+          .eq("organization_id", project.organizationId)
+          .eq("project_id", project.id),
+      );
+      await checked(
+        this.db.from("cache_recommendations").insert(
+          artifacts.cacheRecommendations.map((recommendation) =>
+            toCacheRecommendationRow({
+              ...recommendation,
+              id: id("cache"),
+              organizationId: project.organizationId,
+              projectId: project.id,
+              createdAt: now,
+            }),
+          ),
+        ),
+      );
+    }
     await this.seedOptimization(actor, project.organizationId, project.id);
   }
 
@@ -777,6 +1001,13 @@ function emptyProjectRecords(): Omit<WorkspaceState, "organization" | "user" | "
   };
 }
 
+async function buildAuditReportPdfOrThrow(state: WorkspaceState) {
+  if (!state.reports.length) {
+    throw new ApiError(409, "Generate an audit report before exporting PDF.", "report_not_ready");
+  }
+  return buildAuditReportPdf(state);
+}
+
 function id(prefix: string) {
   return `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
 }
@@ -787,6 +1018,10 @@ function stableId(prefix: string, ...parts: string[]) {
 
 function slugify(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
+function normalizeList(values: string[]) {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).slice(0, 12);
 }
 
 function sourceFromFileName(fileName: string, contentType = ""): TraceImport["source"] {
@@ -890,6 +1125,7 @@ const mapProcessingJob = (row: any): ProcessingJob => ({
   action: row.action,
   status: row.status,
   errorMessage: row.error_message || undefined,
+  metadata: row.metadata || {},
   startedAt: row.started_at || undefined,
   completedAt: row.completed_at || undefined,
   createdAt: row.created_at,
@@ -1072,6 +1308,7 @@ const toProcessingJobRow = (item: ProcessingJob) => ({
   action: item.action,
   status: item.status,
   error_message: item.errorMessage || null,
+  metadata: item.metadata || {},
   started_at: item.startedAt || null,
   completed_at: item.completedAt || null,
   created_at: item.createdAt,

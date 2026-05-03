@@ -60,7 +60,9 @@ describe("EvalOps API core flow", () => {
       }),
       { params: Promise.resolve({ projectId }) },
     );
-    expect((await importResponse.json()).ok).toBe(true);
+    const importPayload = await importResponse.json();
+    expect(importPayload.ok).toBe(true);
+    expect(importPayload.data.job.status).toBe("queued");
 
     const stateResponse = await stateRoute.GET(
       new NextRequest(`http://localhost/api/app-state?projectId=${projectId}`),
@@ -93,6 +95,94 @@ describe("EvalOps API core flow", () => {
       { params: Promise.resolve({ exportId: exportPayload.data.id }) },
     );
     expect(await download.text()).toContain("case_id,name,set,intent,risk,status,last_result,open_issues");
+  });
+
+  it("generates a production-style audit report PDF after processing", async () => {
+    const projectsRoute = await import("./projects/route");
+    const importsRoute = await import("./projects/[projectId]/imports/route");
+    const exportsRoute = await import("./projects/[projectId]/exports/route");
+    const downloadRoute = await import("./exports/[exportId]/download/route");
+
+    const projectResponse = await projectsRoute.POST(
+      jsonRequest("http://localhost/api/projects", {
+        name: "Board Report Audit",
+        workflowType: "support_assistant",
+        objective: "Create a buyer-ready audit report.",
+        riskPreferences: ["Escalation", "Privacy"],
+        privacyMode: "redact_pii",
+      }),
+    );
+    const projectPayload = await projectResponse.json();
+    const projectId = projectPayload.data.id as string;
+
+    const form = new FormData();
+    form.append(
+      "file",
+      new File(
+        [
+          "conversation_id,user_input,assistant_output\n" +
+            "c_1,I asked three times and this is still not fixed,Try restarting the app.",
+        ],
+        "board-report.csv",
+        { type: "text/csv" },
+      ),
+    );
+    await importsRoute.POST(
+      new NextRequest(`http://localhost/api/projects/${projectId}/imports`, {
+        method: "POST",
+        body: form,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+
+    const exportResponse = await exportsRoute.POST(
+      jsonRequest(`http://localhost/api/projects/${projectId}/exports`, {
+        type: "audit_report_pdf",
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    const exportPayload = await exportResponse.json();
+    expect(exportPayload.ok).toBe(true);
+    expect(exportPayload.data.type).toBe("audit_report_pdf");
+    expect(exportPayload.data.fileName).toMatch(/audit-report\.pdf$/);
+    expect(exportPayload.data.contentType).toBe("application/pdf");
+
+    const download = await downloadRoute.GET(
+      new NextRequest(`http://localhost/api/exports/${exportPayload.data.id}/download`),
+      { params: Promise.resolve({ exportId: exportPayload.data.id }) },
+    );
+    expect(download.headers.get("content-type")).toBe("application/pdf");
+    const bytes = new Uint8Array(await download.arrayBuffer());
+    expect(Buffer.from(bytes.slice(0, 5)).toString("utf8")).toBe("%PDF-");
+  });
+
+  it("returns report_not_ready when PDF export is requested before the first report", async () => {
+    const projectsRoute = await import("./projects/route");
+    const exportsRoute = await import("./projects/[projectId]/exports/route");
+
+    const projectResponse = await projectsRoute.POST(
+      jsonRequest("http://localhost/api/projects", {
+        name: "Premature Report Audit",
+        workflowType: "support_assistant",
+        objective: "Verify report export readiness checks.",
+        riskPreferences: ["Billing"],
+        privacyMode: "redact_pii",
+      }),
+    );
+    const projectPayload = await projectResponse.json();
+    const projectId = projectPayload.data.id as string;
+
+    const exportResponse = await exportsRoute.POST(
+      jsonRequest(`http://localhost/api/projects/${projectId}/exports`, {
+        type: "audit_report_pdf",
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    const exportPayload = await exportResponse.json();
+
+    expect(exportResponse.status).toBe(409);
+    expect(exportPayload.ok).toBe(false);
+    expect(exportPayload.error.code).toBe("report_not_ready");
   });
 
   it("returns a user-safe error for unsupported upload content", async () => {
@@ -212,6 +302,159 @@ describe("EvalOps API core flow", () => {
     );
   });
 
+  it("rejects duplicate trace uploads with a clear conflict", async () => {
+    const projectsRoute = await import("./projects/route");
+    const importsRoute = await import("./projects/[projectId]/imports/route");
+
+    const projectResponse = await projectsRoute.POST(
+      jsonRequest("http://localhost/api/projects", {
+        name: "Duplicate Upload Audit",
+        workflowType: "support_assistant",
+        objective: "Prevent duplicate uploads from creating noisy audit artifacts.",
+        riskPreferences: ["Escalation"],
+        privacyMode: "redact_pii",
+      }),
+    );
+    const projectPayload = await projectResponse.json();
+    const projectId = projectPayload.data.id as string;
+
+    const upload = () => {
+      const form = new FormData();
+      form.append(
+        "file",
+        new File(
+          [
+            "conversation_id,user_input,assistant_output\n" +
+              "c_1,I asked three times and this is still not fixed,Try restarting the app.",
+          ],
+          "duplicate.csv",
+          { type: "text/csv" },
+        ),
+      );
+      return importsRoute.POST(
+        new NextRequest(`http://localhost/api/projects/${projectId}/imports`, {
+          method: "POST",
+          body: form,
+        }),
+        { params: Promise.resolve({ projectId }) },
+      );
+    };
+
+    expect((await (await upload()).json()).ok).toBe(true);
+
+    const duplicateResponse = await upload();
+    const duplicatePayload = await duplicateResponse.json();
+    expect(duplicateResponse.status).toBe(409);
+    expect(duplicatePayload.ok).toBe(false);
+    expect(duplicatePayload.error.code).toBe("duplicate_upload");
+    expect(duplicatePayload.error.message).toContain("already been imported");
+  });
+
+  it("persists project privacy settings", async () => {
+    const projectsRoute = await import("./projects/route");
+    const stateRoute = await import("./app-state/route");
+    const settingsRoute = await import("./projects/[projectId]/settings/route");
+
+    const projectResponse = await projectsRoute.POST(
+      jsonRequest("http://localhost/api/projects", {
+        name: "Settings Audit",
+        workflowType: "support_assistant",
+        objective: "Verify privacy settings persist for customer rollout.",
+        riskPreferences: ["Billing"],
+        privacyMode: "redact_pii",
+      }),
+    );
+    const projectPayload = await projectResponse.json();
+    const projectId = projectPayload.data.id as string;
+
+    const settingsResponse = await settingsRoute.PATCH(
+      jsonRequest(
+        `http://localhost/api/projects/${projectId}/settings`,
+        {
+          privacyMode: "derived_only",
+          riskPreferences: ["Billing", "Escalation", "Privacy"],
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ projectId }) },
+    );
+    const settingsPayload = await settingsResponse.json();
+    expect(settingsPayload.ok).toBe(true);
+    expect(settingsPayload.data.privacyMode).toBe("derived_only");
+
+    const stateResponse = await stateRoute.GET(
+      new NextRequest(`http://localhost/api/app-state?projectId=${projectId}`),
+    );
+    const statePayload = await stateResponse.json();
+    expect(statePayload.data.activeProject.privacyMode).toBe("derived_only");
+    expect(statePayload.data.activeProject.riskPreferences).toEqual(
+      expect.arrayContaining(["Billing", "Escalation", "Privacy"]),
+    );
+  });
+
+  it("persists grader configuration edits", async () => {
+    const projectsRoute = await import("./projects/route");
+    const stateRoute = await import("./app-state/route");
+    const importsRoute = await import("./projects/[projectId]/imports/route");
+    const gradersRoute = await import("./graders/[graderId]/route");
+
+    const projectResponse = await projectsRoute.POST(
+      jsonRequest("http://localhost/api/projects", {
+        name: "Grader Edit Audit",
+        workflowType: "support_assistant",
+        objective: "Verify graders can be reviewed and tuned after generation.",
+        riskPreferences: ["Escalation"],
+        privacyMode: "redact_pii",
+      }),
+    );
+    const projectPayload = await projectResponse.json();
+    const projectId = projectPayload.data.id as string;
+
+    const form = new FormData();
+    form.append(
+      "file",
+      new File(
+        [
+          "conversation_id,user_input,assistant_output\n" +
+            "c_1,I asked three times and this is still not fixed,Try restarting the app.",
+        ],
+        "grader-edit.csv",
+        { type: "text/csv" },
+      ),
+    );
+    await importsRoute.POST(
+      new NextRequest(`http://localhost/api/projects/${projectId}/imports`, {
+        method: "POST",
+        body: form,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+
+    const stateResponse = await stateRoute.GET(
+      new NextRequest(`http://localhost/api/app-state?projectId=${projectId}`),
+    );
+    const statePayload = await stateResponse.json();
+    const graderId = statePayload.data.graders[0].id as string;
+
+    const graderResponse = await gradersRoute.PATCH(
+      jsonRequest(
+        `http://localhost/api/graders/${graderId}`,
+        {
+          description: "Score escalation quality against the pilot handoff rubric.",
+          active: false,
+          model: "gpt-5.5",
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ graderId }) },
+    );
+    const graderPayload = await graderResponse.json();
+    expect(graderPayload.ok).toBe(true);
+    expect(graderPayload.data.description).toBe("Score escalation quality against the pilot handoff rubric.");
+    expect(graderPayload.data.active).toBe(false);
+    expect(graderPayload.data.model).toBe("gpt-5.5");
+  });
+
   it("returns a user-safe error for malformed JSON request bodies", async () => {
     const projectsRoute = await import("./projects/route");
 
@@ -231,9 +474,9 @@ describe("EvalOps API core flow", () => {
   });
 });
 
-function jsonRequest(url: string, body: unknown) {
+function jsonRequest(url: string, body: unknown, method = "POST") {
   return new NextRequest(url, {
-    method: "POST",
+    method,
     body: JSON.stringify(body),
     headers: { "content-type": "application/json" },
   });

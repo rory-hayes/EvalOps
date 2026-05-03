@@ -63,3 +63,20 @@ export function csvResponse(content: string, fileName: string) {
     },
   });
 }
+
+export function downloadResponse(content: string | Uint8Array, fileName: string, contentType: string) {
+  let body: BodyInit;
+  if (typeof content === "string") {
+    body = content;
+  } else {
+    const arrayBuffer = new ArrayBuffer(content.byteLength);
+    new Uint8Array(arrayBuffer).set(content);
+    body = new Blob([arrayBuffer], { type: contentType });
+  }
+  return new Response(body, {
+    headers: {
+      "content-type": contentType,
+      "content-disposition": `attachment; filename="${fileName.replace(/"/g, "")}"`,
+    },
+  });
+}
