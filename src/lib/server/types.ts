@@ -1,4 +1,13 @@
-import type { EvalCase, Grader, RiskLevel, TraceImport } from "../domain/audit";
+import type {
+  EvalCase,
+  EvalDataset,
+  EvalResult,
+  Grader,
+  Intent,
+  RiskLevel,
+  TraceImport,
+  WorkflowType,
+} from "../domain/audit";
 import type { IssueStatus, NormalizedTrace, ReviewIssue } from "../domain/trace-processing";
 
 export type ActorContext = {
@@ -33,7 +42,7 @@ export type Project = {
   id: string;
   organizationId: string;
   name: string;
-  workflowType: "support_assistant" | "rag" | "tool_agent" | "document_extraction" | "custom";
+  workflowType: WorkflowType;
   objective: string;
   riskPreferences: string[];
   privacyMode: "redact_pii" | "derived_only" | "short_retention";
@@ -132,6 +141,24 @@ export type FailureCluster = {
   severity: RiskLevel;
   issueCount: number;
   percent: number;
+  createdAt: string;
+};
+
+export type StoredIntent = Intent & {
+  organizationId: string;
+  projectId: string;
+  createdAt: string;
+};
+
+export type StoredEvalDataset = EvalDataset & {
+  organizationId: string;
+  projectId: string;
+  createdAt: string;
+};
+
+export type StoredEvalResult = EvalResult & {
+  organizationId: string;
+  projectId: string;
   createdAt: string;
 };
 

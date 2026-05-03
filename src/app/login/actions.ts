@@ -5,6 +5,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { hasSupabasePublicConfig } from "@/lib/supabase/config";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { resolveAuthRedirectPath } from "./redirects";
 
 export async function login(formData: FormData) {
   if (!hasSupabasePublicConfig()) {
@@ -24,7 +25,7 @@ export async function login(formData: FormData) {
   }
 
   revalidatePath("/", "layout");
-  redirect(readSafeNextPath(formData) || "/projects");
+  redirect(resolveAuthRedirectPath(String(formData.get("next") || "")));
 }
 
 export async function signup(formData: FormData) {
@@ -53,7 +54,7 @@ export async function signup(formData: FormData) {
 
   revalidatePath("/", "layout");
   if (data.session) {
-    redirect(readSafeNextPath(formData) || "/projects");
+    redirect(resolveAuthRedirectPath(String(formData.get("next") || "")));
   }
   redirectWithMessage("Check your email to confirm your account, then sign in.");
 }
@@ -71,12 +72,6 @@ function readCredentials(formData: FormData) {
   }
 
   return { ok: true as const, data: { email, password } };
-}
-
-function readSafeNextPath(formData: FormData) {
-  const next = String(formData.get("next") || "");
-  if (!next.startsWith("/") || next.startsWith("//")) return "";
-  return next;
 }
 
 function redirectWithError(message: string): never {

@@ -17,5 +17,15 @@ test("public landing page leads into onboarding and app dashboard", async ({ pag
   await expect(page.getByRole("button", { name: /Goals/ })).toBeVisible();
 
   await page.goto("/dashboard");
-  await expect(page.getByRole("heading", { name: /Projects|Eval Health Overview/ })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Projects", exact: true }).or(
+      page.getByRole("heading", { name: "Eval Health Overview", exact: true }),
+    ),
+  ).toBeVisible();
+});
+
+test("signup route sends users into auth without a missing-route dead end", async ({ page }) => {
+  await page.goto("/signup");
+  await expect(page).toHaveURL(/\/login\?next=(%2F|\/)projects$/);
+  await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
 });

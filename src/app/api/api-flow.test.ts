@@ -131,6 +131,87 @@ describe("EvalOps API core flow", () => {
     expect(importPayload.error.correlationId).toBeTruthy();
   });
 
+  it("normalizes JSON and NDJSON upload MIME types before persistence", async () => {
+    const projectsRoute = await import("./projects/route");
+    const stateRoute = await import("./app-state/route");
+    const importsRoute = await import("./projects/[projectId]/imports/route");
+
+    const projectResponse = await projectsRoute.POST(
+      jsonRequest("http://localhost/api/projects", {
+        name: "JSON Upload Audit",
+        workflowType: "support_assistant",
+        objective: "Verify JSON and NDJSON uploads are accepted.",
+        riskPreferences: ["Billing"],
+        privacyMode: "redact_pii",
+      }),
+    );
+    const projectPayload = await projectResponse.json();
+    const projectId = projectPayload.data.id as string;
+
+    const jsonForm = new FormData();
+    jsonForm.append(
+      "file",
+      new File(
+        [
+          JSON.stringify({
+            id: "json_1",
+            prompt: "I need a refund for a duplicate charge",
+            response: "I can help review the duplicate charge and start a refund.",
+          }),
+        ],
+        "support.json",
+        { type: "application/octet-stream" },
+      ),
+    );
+    const jsonImportResponse = await importsRoute.POST(
+      new NextRequest(`http://localhost/api/projects/${projectId}/imports`, {
+        method: "POST",
+        body: jsonForm,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect((await jsonImportResponse.json()).ok).toBe(true);
+
+    const ndjsonForm = new FormData();
+    ndjsonForm.append(
+      "file",
+      new File(
+        [
+          JSON.stringify({
+            id: "ndjson_1",
+            prompt: "My account access is broken",
+            response: "Let's reset your account access safely.",
+          }),
+        ],
+        "events.ndjson",
+        { type: "" },
+      ),
+    );
+    const ndjsonImportResponse = await importsRoute.POST(
+      new NextRequest(`http://localhost/api/projects/${projectId}/imports`, {
+        method: "POST",
+        body: ndjsonForm,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect((await ndjsonImportResponse.json()).ok).toBe(true);
+
+    const stateResponse = await stateRoute.GET(
+      new NextRequest(`http://localhost/api/app-state?projectId=${projectId}`),
+    );
+    const statePayload = await stateResponse.json();
+
+    expect(statePayload.data.traceImports).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "JSON", status: "completed" }),
+        expect.objectContaining({ source: "NDJSON", status: "completed" }),
+      ]),
+    );
+    expect(statePayload.data.uploadedFiles.map((file: { contentType: string }) => file.contentType)).toEqual(
+      expect.arrayContaining(["application/json", "application/x-ndjson"]),
+    );
+  });
+
   it("returns a user-safe error for malformed JSON request bodies", async () => {
     const projectsRoute = await import("./projects/route");
 

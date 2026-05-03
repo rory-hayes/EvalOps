@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCsvExport,
   buildEvalArtifacts,
+  normalizeTraceFileContentType,
   parseTraceFile,
   redactSensitiveText,
 } from "./trace-processing";
@@ -44,6 +45,33 @@ describe("trace processing", () => {
     expect(traces[0].redactedInput).toContain("[email]");
     expect(traces[0].redactedInput).toContain("[card]");
     expect(traces[0].redactionHits).toEqual(["email", "card"]);
+  });
+
+  it("parses a single JSON prompt-output object from generic browser MIME types", () => {
+    const traces = parseTraceFile({
+      fileName: "support.JSON",
+      contentType: "application/octet-stream",
+      text: JSON.stringify({
+        id: "json_1",
+        prompt: "I need a refund for a duplicate charge",
+        response: "I can help review the duplicate charge and start a refund.",
+      }),
+    });
+
+    expect(traces).toHaveLength(1);
+    expect(traces[0]).toMatchObject({
+      externalId: "json_1",
+      sourceType: "JSON",
+      intent: "Billing",
+      riskLevel: "medium",
+    });
+  });
+
+  it("normalizes JSON and NDJSON upload MIME types from file names or MIME aliases", () => {
+    expect(normalizeTraceFileContentType("events.ndjson", "")).toBe("application/x-ndjson");
+    expect(normalizeTraceFileContentType("events.json", "application/octet-stream")).toBe("application/json");
+    expect(normalizeTraceFileContentType("trace-upload", "application/json; charset=utf-8")).toBe("application/json");
+    expect(normalizeTraceFileContentType("trace-upload", "application/jsonl")).toBe("application/x-ndjson");
   });
 
   it("creates deterministic eval cases, issues, and report metrics from persisted traces", () => {

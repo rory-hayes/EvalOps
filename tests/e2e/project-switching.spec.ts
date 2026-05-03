@@ -33,6 +33,6 @@ test("user can switch the active project from the app header", async ({ page }) 
 
   await switcher.selectOption({ label: "Privacy Assistant Audit" });
   await page.goto("/settings");
-  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
   await expect(page.locator("main")).toContainText("Privacy Assistant Audit");
 });

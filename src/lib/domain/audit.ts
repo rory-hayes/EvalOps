@@ -2,6 +2,40 @@ import { z } from "zod";
 
 export const riskLevelSchema = z.enum(["low", "medium", "high"]);
 export const statusSchema = z.enum(["passed", "failed", "degraded", "processing"]);
+export const workflowTypeSchema = z.enum([
+  "support_assistant",
+  "rag",
+  "tool_agent",
+  "document_extraction",
+  "custom",
+]);
+
+export const intentSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().min(1),
+  riskLevel: riskLevelSchema,
+  coveragePercent: z.number().min(0).max(100),
+});
+
+export const evalDatasetSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  set: z.enum(["golden", "regression", "edge", "safety"]),
+  caseCount: z.number().int().nonnegative(),
+  coverageIntentIds: z.array(z.string().min(1)),
+  lastGeneratedAt: z.string().datetime().optional(),
+});
+
+export const evalResultSchema = z.object({
+  id: z.string().min(1),
+  evalRunId: z.string().min(1),
+  evalCaseId: z.string().min(1),
+  status: z.enum(["passed", "failed", "review"]),
+  score: z.number().min(0).max(100),
+  graderId: z.string().min(1),
+  rationale: z.string().min(1),
+});
 
 export const traceImportSchema = z.object({
   id: z.string().min(1),
@@ -49,6 +83,10 @@ export const auditReadinessInputSchema = z.object({
 });
 
 export type RiskLevel = z.infer<typeof riskLevelSchema>;
+export type WorkflowType = z.infer<typeof workflowTypeSchema>;
+export type Intent = z.infer<typeof intentSchema>;
+export type EvalDataset = z.infer<typeof evalDatasetSchema>;
+export type EvalResult = z.infer<typeof evalResultSchema>;
 export type TraceImport = z.infer<typeof traceImportSchema>;
 export type EvalCase = z.infer<typeof evalCaseSchema>;
 export type Grader = z.infer<typeof graderSchema>;

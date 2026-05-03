@@ -54,6 +54,27 @@ type ParseTraceFileInput = {
   text: string;
 };
 
+const NORMALIZED_CONTENT_TYPE: Record<TraceSourceType, string> = {
+  CSV: "text/csv",
+  JSON: "application/json",
+  NDJSON: "application/x-ndjson",
+  TXT: "text/plain",
+};
+
+const NDJSON_CONTENT_TYPES = new Set([
+  "application/x-ndjson",
+  "application/ndjson",
+  "application/jsonl",
+  "application/json-lines",
+  "application/jsonlines",
+  "application/x-jsonlines",
+  "text/x-ndjson",
+  "text/ndjson",
+  "text/jsonl",
+]);
+
+const JSON_CONTENT_TYPES = new Set(["application/json", "text/json"]);
+
 const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const PHONE_RE = /(?:\+?\d[\s.-]?){9,15}/g;
 const CARD_RE = /\b(?:\d[ -]*?){13,19}\b/g;
@@ -79,7 +100,7 @@ export function redactSensitiveText(text: string) {
 }
 
 export function parseTraceFile(input: ParseTraceFileInput): NormalizedTrace[] {
-  const sourceType = inferSourceType(input.fileName, input.contentType);
+  const sourceType = inferTraceSourceType(input.fileName, input.contentType);
   const rows =
     sourceType === "CSV"
       ? parseCsvRows(input.text)
@@ -96,13 +117,37 @@ export function parseTraceFile(input: ParseTraceFileInput): NormalizedTrace[] {
   return rows.map((row, index) => normalizeTraceRow(row, index, sourceType));
 }
 
-function inferSourceType(fileName: string, contentType: string): TraceSourceType {
+export function inferTraceSourceType(fileName: string, contentType: string): TraceSourceType {
   const lower = fileName.toLowerCase();
-  if (lower.endsWith(".csv") || contentType.includes("csv")) return "CSV";
-  if (lower.endsWith(".ndjson") || contentType.includes("x-ndjson")) return "NDJSON";
-  if (lower.endsWith(".json") || contentType.includes("json")) return "JSON";
-  if (lower.endsWith(".txt") || contentType.startsWith("text/")) return "TXT";
+  if (lower.endsWith(".csv")) return "CSV";
+  if (lower.endsWith(".ndjson") || lower.endsWith(".jsonl")) return "NDJSON";
+  if (lower.endsWith(".json")) return "JSON";
+  if (lower.endsWith(".txt")) return "TXT";
+
+  const type = baseContentType(contentType);
+  if (NDJSON_CONTENT_TYPES.has(type)) return "NDJSON";
+  if (JSON_CONTENT_TYPES.has(type)) return "JSON";
+  if (type === "text/csv" || type === "application/csv") return "CSV";
+  if (type.startsWith("text/")) return "TXT";
+
   throw new Error("Unsupported file type. Upload CSV, JSON, NDJSON, or TXT files.");
+}
+
+export function isSupportedTraceFile(fileName: string, contentType: string) {
+  try {
+    inferTraceSourceType(fileName, contentType);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function normalizeTraceFileContentType(fileName: string, contentType: string) {
+  return NORMALIZED_CONTENT_TYPE[inferTraceSourceType(fileName, contentType)];
+}
+
+function baseContentType(contentType: string) {
+  return contentType.split(";")[0]?.trim().toLowerCase() || "";
 }
 
 function parseCsvRows(text: string): Record<string, unknown>[] {
@@ -122,8 +167,9 @@ function parseJsonRows(text: string): Record<string, unknown>[] {
     if (Array.isArray(object.traces)) return object.traces as Record<string, unknown>[];
     if (Array.isArray(object.rows)) return object.rows as Record<string, unknown>[];
     if (Array.isArray(object.messages)) return [object];
+    if (hasTraceLikeFields(object)) return [object];
   }
-  throw new Error("JSON trace files must be an array or contain traces, rows, or messages.");
+  throw new Error("JSON trace files must be an array, a prompt-output object, or contain traces, rows, or messages.");
 }
 
 function parseNdjsonRows(text: string): Record<string, unknown>[] {
@@ -147,6 +193,24 @@ function parseTextRows(text: string): Record<string, unknown>[] {
       };
     })
     .filter((row) => String(row.input).trim().length > 0);
+}
+
+function hasTraceLikeFields(row: Record<string, unknown>) {
+  return [
+    "user_input",
+    "input",
+    "prompt",
+    "user",
+    "content",
+    "question",
+    "request",
+    "assistant_output",
+    "output",
+    "response",
+    "assistant",
+    "answer",
+    "completion",
+  ].some((key) => typeof row[key] === "string" && String(row[key]).trim().length > 0);
 }
 
 function normalizeTraceRow(

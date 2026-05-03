@@ -2,7 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 import { getSupabasePublicConfig } from "./config";
 
-const PUBLIC_PATHS = ["/", "/onboarding", "/login", "/auth/confirm"];
+const PUBLIC_PATHS = ["/", "/onboarding", "/login", "/signup", "/auth/confirm"];
 
 export async function updateSession(request: NextRequest) {
   const config = getSupabasePublicConfig();

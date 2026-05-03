@@ -203,8 +203,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </span>
             </div>
             <form method="post" action="/logout">
-              <button aria-label="Sign out" className="h-11 w-11 rounded-[8px] border border-slate-200 bg-white shadow-sm">
-                <LogOut className="mx-auto h-4 w-4 text-slate-600" />
+              <button
+                aria-label="Sign out"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-[8px] border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+              >
+                <LogOut className="h-4 w-4 text-slate-600" />
+                <span>Sign out</span>
               </button>
             </form>
           </div>

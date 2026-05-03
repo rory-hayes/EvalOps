@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   computeAuditReadiness,
+  evalDatasetSchema,
   evalCaseSchema,
+  evalResultSchema,
+  intentSchema,
   traceImportSchema,
+  workflowTypeSchema,
 } from "./audit";
 
 describe("audit domain helpers", () => {
@@ -70,5 +74,33 @@ describe("audit domain helpers", () => {
         acceptanceCriteria: [],
       }).success,
     ).toBe(false);
+  });
+
+  it("covers milestone one domain model shells for workflows, intents, datasets, and results", () => {
+    expect(workflowTypeSchema.safeParse("support_assistant").success).toBe(true);
+    expect(intentSchema.safeParse({
+      id: "intent_billing",
+      label: "Billing",
+      description: "Billing disputes and invoice questions.",
+      riskLevel: "medium",
+      coveragePercent: 72,
+    }).success).toBe(true);
+    expect(evalDatasetSchema.safeParse({
+      id: "dataset_regression",
+      name: "Regression safety",
+      set: "regression",
+      caseCount: 18,
+      coverageIntentIds: ["intent_billing"],
+      lastGeneratedAt: "2026-05-01T10:24:00.000Z",
+    }).success).toBe(true);
+    expect(evalResultSchema.safeParse({
+      id: "result_1",
+      evalRunId: "run_1",
+      evalCaseId: "case_1",
+      status: "review",
+      score: 68,
+      graderId: "grader_1",
+      rationale: "The answer missed the required handoff.",
+    }).success).toBe(true);
   });
 });

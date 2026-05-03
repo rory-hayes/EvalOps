@@ -5,6 +5,7 @@ import type { TraceImport } from "../domain/audit";
 import {
   buildCsvExport,
   buildEvalArtifacts,
+  inferTraceSourceType,
   parseTraceFile,
 } from "../domain/trace-processing";
 import type {
@@ -224,7 +225,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
     const traceImportId = makeId("imp");
     const fileId = makeId("file");
     const checksum = createHash("sha256").update(input.text).digest("hex");
-    const source = sourceFromFileName(input.fileName);
+    const source = sourceFromFileName(input.fileName, input.contentType);
     const storagePath = `${project.organizationId}/${project.id}/${traceImportId}/${input.fileName}`;
     const importRecord: TraceImport = {
       id: traceImportId,
@@ -889,12 +890,8 @@ function audit(
   };
 }
 
-function sourceFromFileName(fileName: string): TraceImport["source"] {
-  const lower = fileName.toLowerCase();
-  if (lower.endsWith(".csv")) return "CSV";
-  if (lower.endsWith(".json")) return "JSON";
-  if (lower.endsWith(".ndjson")) return "NDJSON";
-  return "TXT";
+function sourceFromFileName(fileName: string, contentType = ""): TraceImport["source"] {
+  return inferTraceSourceType(fileName, contentType);
 }
 
 function mostCommon(values: string[]) {

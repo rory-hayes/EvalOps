@@ -5,6 +5,7 @@ import type { TraceImport } from "../domain/audit";
 import {
   buildCsvExport,
   buildEvalArtifacts,
+  inferTraceSourceType,
   parseTraceFile,
 } from "../domain/trace-processing";
 import { createSupabaseAdminClient } from "./supabase-admin";
@@ -162,7 +163,7 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
     const traceImportId = id("imp");
     const checksum = createHash("sha256").update(input.text).digest("hex");
     const storagePath = `${project.organizationId}/${project.id}/${traceImportId}/${input.fileName}`;
-    const source = sourceFromFileName(input.fileName);
+    const source = sourceFromFileName(input.fileName, input.contentType);
     const importRecord: TraceImport = {
       id: traceImportId,
       source,
@@ -788,12 +789,8 @@ function slugify(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 }
 
-function sourceFromFileName(fileName: string): TraceImport["source"] {
-  const lower = fileName.toLowerCase();
-  if (lower.endsWith(".csv")) return "CSV";
-  if (lower.endsWith(".json")) return "JSON";
-  if (lower.endsWith(".ndjson")) return "NDJSON";
-  return "TXT";
+function sourceFromFileName(fileName: string, contentType = ""): TraceImport["source"] {
+  return inferTraceSourceType(fileName, contentType);
 }
 
 function mostCommon(values: string[]) {
