@@ -1,7 +1,7 @@
 import { requireOpenAIAuditConfig } from "@/lib/ai/openai-audit-generation";
 import { inngest } from "@/lib/inngest/client";
 import { ApiError } from "@/lib/server/auth";
-import { isTestMode } from "@/lib/server/env";
+import { assertProductionEnvironmentConfigured, isTestMode } from "@/lib/server/env";
 import { getEvalOpsStore } from "@/lib/server/store";
 import type { ActorContext } from "@/lib/server/types";
 
@@ -20,13 +20,12 @@ export type TraceImportRequestedEvent = {
 export function assertAuditRuntimeConfigured() {
   if (isTestMode()) return;
 
-  requireOpenAIAuditConfig();
-
-  if (!process.env.INNGEST_EVENT_KEY?.trim()) {
-    throw new ApiError(503, "INNGEST_EVENT_KEY is required for production audit processing.", "inngest_not_configured");
-  }
-  if (!process.env.INNGEST_SIGNING_KEY?.trim()) {
-    throw new ApiError(503, "INNGEST_SIGNING_KEY is required for production audit processing.", "inngest_not_configured");
+  try {
+    assertProductionEnvironmentConfigured();
+    requireOpenAIAuditConfig();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Production audit runtime is not configured.";
+    throw new ApiError(503, message, "runtime_not_configured");
   }
 }
 

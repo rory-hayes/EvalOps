@@ -1,0 +1,40 @@
+name: Production Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Preview or production URL to smoke test"
+        required: true
+        default: "https://evalops-copilot.vercel.app"
+
+jobs:
+  production-smoke:
+    name: Live vendor smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run production smoke
+        run: npm run smoke:production
+        env:
+          EVALOPS_BASE_URL: ${{ inputs.base_url }}
+          EVALOPS_SMOKE_TOKEN: ${{ secrets.EVALOPS_SMOKE_TOKEN }}
+          EVALOPS_SMOKE_EMAIL: ${{ secrets.EVALOPS_SMOKE_EMAIL }}
+          EVALOPS_SMOKE_PASSWORD: ${{ secrets.EVALOPS_SMOKE_PASSWORD }}
+          EVALOPS_SMOKE_SECONDARY_EMAIL: ${{ secrets.EVALOPS_SMOKE_SECONDARY_EMAIL }}
+          EVALOPS_SMOKE_SECONDARY_PASSWORD: ${{ secrets.EVALOPS_SMOKE_SECONDARY_PASSWORD }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}

@@ -27,6 +27,7 @@ OPENAI_API_KEY=...
 OPENAI_AUDIT_MODEL=gpt-5.5
 INNGEST_EVENT_KEY=...
 INNGEST_SIGNING_KEY=...
+EVALOPS_SMOKE_TOKEN=...
 ```
 
 For deterministic local E2E without live credentials, explicitly set:
@@ -84,6 +85,21 @@ npm run build
 npm run test:e2e
 ```
 
+## Production Cutover Gate
+
+Milestone 3 adds two operational endpoints:
+
+- `GET /api/health` is public liveness. It does not touch vendors or reveal configuration.
+- `GET /api/readiness` requires `Authorization: Bearer $EVALOPS_SMOKE_TOKEN` and checks required envs, Supabase Postgres, and private Storage buckets.
+
+Run the live smoke against a preview or production deployment with real smoke users:
+
+```bash
+EVALOPS_BASE_URL=https://<deployment-url> npm run smoke:production
+```
+
+The smoke signs in through Supabase Auth, creates a project, uploads a trace file, waits for Inngest processing, verifies OpenAI structured generation metadata, exports a PDF, checks duplicate upload protection, and confirms Supabase RLS/storage isolation between two smoke users.
+
 ## Vercel Deployment
 
 Link the project and set the env vars above:
@@ -97,10 +113,23 @@ vercel env add OPENAI_API_KEY production
 vercel env add OPENAI_AUDIT_MODEL production
 vercel env add INNGEST_EVENT_KEY production
 vercel env add INNGEST_SIGNING_KEY production
+vercel env add EVALOPS_SMOKE_TOKEN production
 vercel deploy --prod
 ```
 
 Do not deploy with `EVALOPS_TEST_MODE=1`; that mode is only for deterministic local and CI verification.
+
+Set the same app envs for Preview before running the production smoke against preview deployments. Keep smoke user credentials in GitHub Actions secrets for the manual `Production Smoke` workflow:
+
+```bash
+EVALOPS_SMOKE_TOKEN
+EVALOPS_SMOKE_EMAIL
+EVALOPS_SMOKE_PASSWORD
+EVALOPS_SMOKE_SECONDARY_EMAIL
+EVALOPS_SMOKE_SECONDARY_PASSWORD
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+```
 
 ## Source Documents
 

@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { ApiError } from "./auth";
+import { logServerEvent } from "./logger";
 
 export async function handleApi<T>(handler: (correlationId: string) => Promise<T>) {
   const correlationId = randomUUID();
   try {
     const data = await handler(correlationId);
-    return NextResponse.json({ ok: true, data, correlationId });
+    return withCorrelationId(NextResponse.json({ ok: true, data, correlationId }), correlationId);
   } catch (error) {
     const status =
       error instanceof ApiError
@@ -29,10 +30,10 @@ export async function handleApi<T>(handler: (correlationId: string) => Promise<T
           : "Unexpected server error.";
 
     if (status >= 500) {
-      console.error(JSON.stringify({ correlationId, code, message }));
+      logServerEvent("error", "api.request.failed", { correlationId, code, message, status });
     }
 
-    return NextResponse.json(
+    return withCorrelationId(NextResponse.json(
       {
         ok: false,
         error: {
@@ -43,7 +44,7 @@ export async function handleApi<T>(handler: (correlationId: string) => Promise<T
         },
       },
       { status },
-    );
+    ), correlationId);
   }
 }
 
@@ -79,4 +80,9 @@ export function downloadResponse(content: string | Uint8Array, fileName: string,
       "content-disposition": `attachment; filename="${fileName.replace(/"/g, "")}"`,
     },
   });
+}
+
+function withCorrelationId(response: NextResponse, correlationId: string) {
+  response.headers.set("x-correlation-id", correlationId);
+  return response;
 }
