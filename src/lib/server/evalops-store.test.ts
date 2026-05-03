@@ -476,4 +476,93 @@ describe("local evalops store", () => {
       ]),
     );
   });
+
+  it("blocks paid actions when billing is not active or trialing", async () => {
+    const store = await createStore();
+    const actor = {
+      userId: "user_1",
+      email: "founder@example.com",
+      organizationId: "org_1",
+    };
+
+    await store.ensureWorkspace(actor);
+    await store.updateOrganizationBilling(actor, { status: "setup_required" });
+
+    await expect(
+      store.createProject(actor, {
+        name: "Blocked Audit",
+        workflowType: "support_assistant",
+        objective: "Verify billing gates commercial project creation.",
+        riskPreferences: ["Billing"],
+        privacyMode: "redact_pii",
+      }),
+    ).rejects.toMatchObject({ status: 402, code: "payment_required" });
+  });
+
+  it("enforces project and seat quotas", async () => {
+    const store = await createStore();
+    const actor = {
+      userId: "user_1",
+      email: "founder@example.com",
+      organizationId: "org_1",
+    };
+
+    await store.ensureWorkspace(actor);
+    for (let index = 1; index <= 3; index += 1) {
+      await store.createProject(actor, {
+        name: `Starter Audit ${index}`,
+        workflowType: "support_assistant",
+        objective: "Verify starter project limits with realistic audit projects.",
+        riskPreferences: ["Billing"],
+        privacyMode: "redact_pii",
+      });
+    }
+
+    await expect(
+      store.createProject(actor, {
+        name: "Fourth Audit",
+        workflowType: "support_assistant",
+        objective: "This project should exceed the starter plan limit.",
+        riskPreferences: ["Billing"],
+        privacyMode: "redact_pii",
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "quota_exceeded" });
+
+    await store.createOrganizationInvitation(actor, { email: "member@example.com", role: "member" });
+    await store.createOrganizationInvitation(actor, { email: "reviewer@example.com", role: "reviewer" });
+    await expect(
+      store.createOrganizationInvitation(actor, { email: "third@example.com", role: "reviewer" }),
+    ).rejects.toMatchObject({ status: 409, code: "quota_exceeded" });
+  });
+
+  it("accepts invitations and enforces reviewer permissions", async () => {
+    const store = await createStore();
+    const owner = {
+      userId: "user_owner",
+      email: "owner@example.com",
+      organizationId: "org_1",
+    };
+    const reviewer = {
+      userId: "user_reviewer",
+      email: "reviewer@example.com",
+    };
+
+    await store.ensureWorkspace(owner);
+    const created = await store.createOrganizationInvitation(owner, {
+      email: "reviewer@example.com",
+      role: "reviewer",
+    });
+    const membership = await store.acceptOrganizationInvitation(reviewer, created.token);
+
+    expect(membership.role).toBe("reviewer");
+    await expect(
+      store.createProject({ ...reviewer, organizationId: "org_1" }, {
+        name: "Reviewer Audit",
+        workflowType: "support_assistant",
+        objective: "Reviewers should not be able to create projects.",
+        riskPreferences: ["Roles"],
+        privacyMode: "redact_pii",
+      }),
+    ).rejects.toMatchObject({ status: 403, code: "forbidden" });
+  });
 });

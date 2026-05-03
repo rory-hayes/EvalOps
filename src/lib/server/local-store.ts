@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TraceImport } from "../domain/audit";
@@ -12,6 +12,10 @@ import { executeDeterministicGrader, summarizeEvalResults } from "../domain/eval
 import { generateAuditArtifacts, type AuditArtifacts } from "@/lib/ai/openai-audit-generation";
 import { buildAuditReportPdf } from "./audit-report-pdf";
 import { ApiError } from "./auth";
+import { canUseBillingFeatures } from "./commercial/plans";
+import { canConsumeQuota, getCurrentMonthlyPeriod, summarizeUsage } from "./commercial/usage";
+import { canInviteRole, createInviteTokenHash, isInviteExpired, verifyInviteToken } from "./commercial/invites";
+import { canPerformPermission, type RolePermission } from "./permissions";
 import {
   buildFullProjectExportPackage,
   checksumContent,
@@ -22,11 +26,14 @@ import {
 import type {
   ActorContext,
   AuditEvent,
+  BillingOverview,
   CacheRecommendation,
+  CreateOrganizationInvitationInput,
   DataOperationReceipt,
   DeleteProjectInput,
   CreateProjectInput,
   CreateExportInput,
+  CreateSupportRequestInput,
   CreateTraceImportInput,
   EvalOpsStore,
   EvalRun,
@@ -37,6 +44,8 @@ import type {
   StoredHumanLabel,
   IssueComment,
   Organization,
+  OrganizationBilling,
+  OrganizationInvitation,
   OrganizationMembership,
   ProcessingJob,
   ProcessFullProjectExportInput,
@@ -46,13 +55,18 @@ import type {
   PromptCandidate,
   PromptVersion,
   PurgeRawProjectDataInput,
+  RecordUsageInput,
   Report,
   RoutingRule,
   StoredEvalCase,
   StoredEvalResult,
   StoredGrader,
   StoredIssue,
+  StoredUsageEvent,
+  SupportRequest,
   UpdateGraderInput,
+  UpdateOrganizationBillingInput,
+  UpdateOrganizationMemberInput,
   UpsertHumanLabelInput,
   UpdateProjectSettingsInput,
   StoredTrace,
@@ -65,6 +79,11 @@ type LocalState = {
   organizations: Organization[];
   users: UserProfile[];
   memberships: OrganizationMembership[];
+  organizationBilling: OrganizationBilling[];
+  usageEvents: StoredUsageEvent[];
+  invitations: Array<OrganizationInvitation & { tokenHash: string }>;
+  supportRequests: SupportRequest[];
+  stripeEvents: Array<{ id: string; type: string; livemode: boolean; payload: Record<string, unknown>; processedAt: string }>;
   projects: Project[];
   traceImports: TraceImport[];
   traces: StoredTrace[];
@@ -94,6 +113,11 @@ const emptyState = (): LocalState => ({
   organizations: [],
   users: [],
   memberships: [],
+  organizationBilling: [],
+  usageEvents: [],
+  invitations: [],
+  supportRequests: [],
+  stripeEvents: [],
   projects: [],
   traceImports: [],
   traces: [],
@@ -147,58 +171,10 @@ class LocalEvalOpsStore implements EvalOpsStore {
   async ensureWorkspace(actor: ActorContext) {
     return this.withWriteLock(async () => {
     const state = await this.load();
-    const now = new Date().toISOString();
-    const userId = actor.userId;
-    const organizationId = actor.organizationId || `org_${userId}`;
-    let user = state.users.find((item) => item.id === userId);
-    let organization = state.organizations.find((item) => item.id === organizationId);
-    let membership = state.memberships.find(
-      (item) => item.organizationId === organizationId && item.userId === userId,
-    );
-
-    if (!user) {
-      user = {
-        id: userId,
-        email: actor.email || `${userId}@local.test`,
-        displayName: actor.email?.split("@")[0] || "EvalOps Reviewer",
-        createdAt: now,
-      };
-      state.users.push(user);
-    }
-
-    if (!organization) {
-      organization = {
-        id: organizationId,
-        name: defaultOrganizationName(actor),
-        slug: slugify(defaultOrganizationName(actor)),
-        createdAt: now,
-      };
-      state.organizations.push(organization);
-      state.auditEvents.push(
-        audit(actor, organizationId, "organization", organizationId, "organization.created", {
-          name: organization.name,
-        }),
-      );
-    }
-
-    if (!membership) {
-      membership = {
-        id: makeId("mem"),
-        organizationId,
-        userId,
-        role: "owner",
-        createdAt: now,
-      };
-      state.memberships.push(membership);
-      state.auditEvents.push(
-        audit(actor, organizationId, "membership", membership.id, "membership.created", {
-          role: membership.role,
-        }),
-      );
-    }
-
+    const context = ensureLocalMembership(state, actor);
+    ensureBillingRecord(state, context.organization.id);
     await this.save(state);
-    return selectWorkspace(state, organizationId, undefined, user, organization, membership);
+    return selectWorkspace(state, context.organization.id, undefined, context.user, context.organization, context.membership);
     });
   }
 
@@ -221,10 +197,222 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return workspace;
   }
 
+  async listOrganizations(actor: ActorContext) {
+    const state = await this.load();
+    ensureLocalUser(state, actor);
+    return state.memberships
+      .filter((membership) => membership.userId === actor.userId)
+      .map((membership) => {
+        const organization = state.organizations.find((item) => item.id === membership.organizationId);
+        if (!organization) return undefined;
+        return { organization, membership };
+      })
+      .filter((item): item is { organization: Organization; membership: OrganizationMembership } => Boolean(item));
+  }
+
+  async getBillingOverview(actor: ActorContext) {
+    const state = await this.load();
+    const context = requireMembership(state, actor);
+    return buildBillingOverview(state, context.organization.id);
+  }
+
+  async updateOrganizationBilling(actor: ActorContext, input: UpdateOrganizationBillingInput) {
+    return this.withWriteLock(async () => {
+      const state = await this.load();
+      const organizationId = input.organizationId || actor.organizationId || `org_${actor.userId}`;
+      const billing = ensureBillingRecord(state, organizationId);
+      if (input.planId !== undefined) billing.planId = input.planId;
+      if (input.status !== undefined) billing.status = input.status;
+      if (input.stripeCustomerId !== undefined) billing.stripeCustomerId = input.stripeCustomerId;
+      if (input.stripeSubscriptionId !== undefined) billing.stripeSubscriptionId = input.stripeSubscriptionId;
+      if (input.stripePriceId !== undefined) billing.stripePriceId = input.stripePriceId;
+      if (input.stripeCurrentPeriodStart !== undefined) billing.stripeCurrentPeriodStart = input.stripeCurrentPeriodStart;
+      if (input.stripeCurrentPeriodEnd !== undefined) billing.stripeCurrentPeriodEnd = input.stripeCurrentPeriodEnd;
+      if (input.trialEndsAt !== undefined) billing.trialEndsAt = input.trialEndsAt;
+      if (input.cancelAtPeriodEnd !== undefined) billing.cancelAtPeriodEnd = input.cancelAtPeriodEnd;
+      if (input.metadata !== undefined) billing.metadata = input.metadata;
+      billing.updatedAt = new Date().toISOString();
+      await this.save(state);
+      return billing;
+    });
+  }
+
+  async recordUsage(actor: ActorContext, input: RecordUsageInput) {
+    return this.withWriteLock(async () => {
+      const state = await this.load();
+      const context = requireMembership(state, actor);
+      const now = new Date().toISOString();
+      const period = getCurrentMonthlyPeriod(new Date(now));
+      const event: StoredUsageEvent = {
+        id: makeId("usage"),
+        organizationId: input.organizationId || context.organization.id,
+        projectId: input.projectId,
+        metric: input.metric,
+        quantity: input.quantity || 1,
+        source: input.source,
+        sourceId: input.sourceId,
+        periodStart: period.periodStart,
+        metadata: input.metadata || {},
+        createdAt: now,
+      };
+      state.usageEvents.push(event);
+      await this.save(state);
+      return event;
+    });
+  }
+
+  async hasProcessedStripeEvent(eventId: string) {
+    const state = await this.load();
+    return state.stripeEvents.some((event) => event.id === eventId);
+  }
+
+  async recordStripeEvent(input: { id: string; type: string; livemode: boolean; payload: Record<string, unknown> }) {
+    return this.withWriteLock(async () => {
+      const state = await this.load();
+      if (!state.stripeEvents.some((event) => event.id === input.id)) {
+        state.stripeEvents.push({ ...input, processedAt: new Date().toISOString() });
+      }
+      await this.save(state);
+    });
+  }
+
+  async findOrganizationBillingByStripeCustomer(stripeCustomerId: string) {
+    const state = await this.load();
+    return state.organizationBilling.find((item) => item.stripeCustomerId === stripeCustomerId);
+  }
+
+  async createOrganizationInvitation(actor: ActorContext, input: CreateOrganizationInvitationInput) {
+    return this.withWriteLock(async () => {
+      const state = await this.load();
+      const context = requireMembership(state, actor);
+      requirePermission(context.membership, "manageMembers");
+      if (!canInviteRole({ inviterRole: context.membership.role, inviteeRole: input.role })) {
+        throw new ApiError(403, "You cannot invite that role.", "forbidden_role");
+      }
+      assertQuota(state, context.organization.id, "seats", 1);
+      const now = new Date();
+      const token = randomBytes(24).toString("base64url");
+      const invitation: OrganizationInvitation & { tokenHash: string } = {
+        id: makeId("invite"),
+        organizationId: context.organization.id,
+        email: input.email.toLowerCase(),
+        role: input.role,
+        status: "pending",
+        invitedBy: actor.userId,
+        expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        tokenHash: createInviteTokenHash(token),
+      };
+      state.invitations.push(invitation);
+      await this.save(state);
+      return { invitation: stripInvitationToken(invitation), token };
+    });
+  }
+
+  async acceptOrganizationInvitation(actor: ActorContext, token: string) {
+    return this.withWriteLock(async () => {
+      const state = await this.load();
+      const now = new Date().toISOString();
+      const invitation = state.invitations.find((item) => item.status === "pending" && verifyInviteToken(token, item.tokenHash));
+      if (!invitation) {
+        throw new ApiError(404, "Invitation not found or already used.", "invitation_not_found");
+      }
+      if (isInviteExpired(invitation.expiresAt)) {
+        invitation.status = "expired";
+        invitation.updatedAt = now;
+        await this.save(state);
+        throw new ApiError(410, "Invitation has expired.", "invitation_expired");
+      }
+      const user = ensureLocalUser(state, actor);
+      const existing = state.memberships.find((item) => item.organizationId === invitation.organizationId && item.userId === actor.userId);
+      if (existing) return existing;
+      const membership: OrganizationMembership = {
+        id: makeId("mem"),
+        organizationId: invitation.organizationId,
+        userId: user.id,
+        role: invitation.role,
+        createdAt: now,
+      };
+      state.memberships.push(membership);
+      invitation.status = "accepted";
+      invitation.acceptedBy = actor.userId;
+      invitation.acceptedAt = now;
+      invitation.updatedAt = now;
+      state.usageEvents.push({
+        id: makeId("usage"),
+        organizationId: invitation.organizationId,
+        metric: "seats",
+        quantity: 1,
+        source: "invitation.accepted",
+        sourceId: invitation.id,
+        periodStart: getCurrentMonthlyPeriod(new Date(now)).periodStart,
+        metadata: { role: invitation.role },
+        createdAt: now,
+      });
+      await this.save(state);
+      return membership;
+    });
+  }
+
+  async updateOrganizationMember(actor: ActorContext, input: UpdateOrganizationMemberInput) {
+    return this.withWriteLock(async () => {
+      const state = await this.load();
+      const context = requireMembership(state, actor);
+      requirePermission(context.membership, "manageMembers");
+      const membership = state.memberships.find((item) => item.organizationId === context.organization.id && item.id === input.membershipId);
+      if (!membership) throw new ApiError(404, "Member not found.", "member_not_found");
+      if (membership.role === "owner" && input.role !== "owner") assertCanChangeOwner(state, context.organization.id, membership.id);
+      membership.role = input.role;
+      await this.save(state);
+      return membership;
+    });
+  }
+
+  async removeOrganizationMember(actor: ActorContext, membershipId: string) {
+    return this.withWriteLock(async () => {
+      const state = await this.load();
+      const context = requireMembership(state, actor);
+      requirePermission(context.membership, "manageMembers");
+      const membership = state.memberships.find((item) => item.organizationId === context.organization.id && item.id === membershipId);
+      if (!membership) throw new ApiError(404, "Member not found.", "member_not_found");
+      if (membership.role === "owner") assertCanChangeOwner(state, context.organization.id, membership.id);
+      state.memberships = state.memberships.filter((item) => item.id !== membershipId);
+      await this.save(state);
+    });
+  }
+
+  async createSupportRequest(actor: ActorContext, input: CreateSupportRequestInput) {
+    return this.withWriteLock(async () => {
+      const state = await this.load();
+      const context = requireMembership(state, actor);
+      const now = new Date().toISOString();
+      const request: SupportRequest = {
+        id: makeId("support"),
+        organizationId: context.organization.id,
+        projectId: input.projectId,
+        actorUserId: actor.userId,
+        requestType: input.requestType,
+        priority: input.priority || "normal",
+        subject: input.subject,
+        message: input.message,
+        status: "open",
+        metadata: {},
+        createdAt: now,
+        updatedAt: now,
+      };
+      state.supportRequests.push(request);
+      await this.save(state);
+      return request;
+    });
+  }
+
   async createProject(actor: ActorContext, input: CreateProjectInput) {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = ensureLocalMembership(state, actor);
+    assertPaidAction(state, context.membership, "manageProjects");
+    assertQuota(state, context.organization.id, "projects", 1);
     const now = new Date().toISOString();
     const project: Project = {
       id: makeId("proj"),
@@ -239,6 +427,18 @@ class LocalEvalOpsStore implements EvalOpsStore {
       updatedAt: now,
     };
     state.projects.push(project);
+    state.usageEvents.push({
+      id: makeId("usage"),
+      organizationId: project.organizationId,
+      projectId: project.id,
+      metric: "projects",
+      quantity: 1,
+      source: "project.created",
+      sourceId: project.id,
+      periodStart: getCurrentMonthlyPeriod(new Date(now)).periodStart,
+      metadata: { workflowType: project.workflowType },
+      createdAt: now,
+    });
     state.auditEvents.push(
       audit(actor, project.organizationId, "project", project.id, "project.created", {
         workflowType: project.workflowType,
@@ -255,6 +455,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    assertPaidAction(state, context.membership, "manageSettings");
     const project = findProject(state, context.organization.id, projectId);
     const shouldPurgeRaw =
       input.privacyMode === "derived_only" &&
@@ -284,6 +485,8 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    assertPaidAction(state, context.membership, "uploadTraces");
+    assertQuota(state, context.organization.id, "uploads", 1);
     const project = findProject(state, context.organization.id, input.projectId);
     const now = new Date().toISOString();
     const traceImportId = makeId("imp");
@@ -351,6 +554,18 @@ class LocalEvalOpsStore implements EvalOpsStore {
     state.traceImports.push(importRecord);
     state.uploadedFiles.push(uploadedFile);
     state.processingJobs.push(job);
+    state.usageEvents.push({
+      id: makeId("usage"),
+      organizationId: project.organizationId,
+      projectId: project.id,
+      metric: "uploads",
+      quantity: 1,
+      source: "trace_import.created",
+      sourceId: traceImportId,
+      periodStart: getCurrentMonthlyPeriod(new Date(now)).periodStart,
+      metadata: { fileName: input.fileName },
+      createdAt: now,
+    });
     state.auditEvents.push(
       audit(actor, project.organizationId, "uploaded_file", fileId, "file.uploaded", {
         fileName: input.fileName,
@@ -492,6 +707,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    requirePermission(context.membership, "reviewEvals");
     const issue = state.issues.find(
       (item) => item.id === input.issueId && item.organizationId === context.organization.id,
     );
@@ -536,6 +752,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    assertPaidAction(state, context.membership, "runGenerations");
     const grader = state.graders.find(
       (item) => item.id === input.graderId && item.organizationId === context.organization.id,
     );
@@ -572,6 +789,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    requirePermission(context.membership, "reviewEvals");
     const evalCase = state.evalCases.find(
       (item) => item.id === input.caseId && item.organizationId === context.organization.id,
     );
@@ -595,7 +813,10 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    assertPaidAction(state, context.membership, "exportReports");
+    assertQuota(state, context.organization.id, "exports", 1);
     const project = findProject(state, context.organization.id, projectId);
+    const now = new Date().toISOString();
     const evalCases = state.evalCases.filter((item) => item.projectId === project.id);
     const issues = state.issues.filter((item) => item.projectId === project.id);
     const type = input.type || "eval_pack_csv";
@@ -627,9 +848,21 @@ class LocalEvalOpsStore implements EvalOpsStore {
       fileName,
       contentType,
       sizeBytes: typeof content === "string" ? Buffer.byteLength(content) : content.byteLength,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     };
     state.exports.push(exportRecord);
+    state.usageEvents.push({
+      id: makeId("usage"),
+      organizationId: project.organizationId,
+      projectId: project.id,
+      metric: "exports",
+      quantity: 1,
+      source: "export.generated",
+      sourceId: exportRecord.id,
+      periodStart: getCurrentMonthlyPeriod(new Date(now)).periodStart,
+      metadata: { type },
+      createdAt: now,
+    });
     await writeFile(join(this.rootDir, "exports", exportRecord.id), content);
     state.auditEvents.push(
       audit(actor, project.organizationId, "export", exportRecord.id, "export.generated", {
@@ -661,6 +894,8 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    assertPaidAction(state, context.membership, "exportReports");
+    assertQuota(state, context.organization.id, "exports", 1);
     const project = findProject(state, context.organization.id, projectId);
     const now = new Date().toISOString();
     const fileName = `${slugify(project.name)}-full-project-export.json`;
@@ -702,6 +937,18 @@ class LocalEvalOpsStore implements EvalOpsStore {
     });
     exportRecord.receiptId = receipt.id;
     state.exports.unshift(exportRecord);
+    state.usageEvents.push({
+      id: makeId("usage"),
+      organizationId: project.organizationId,
+      projectId: project.id,
+      metric: "exports",
+      quantity: 1,
+      source: "project_export.requested",
+      sourceId: exportRecord.id,
+      periodStart: getCurrentMonthlyPeriod(new Date(now)).periodStart,
+      metadata: { type: exportRecord.type },
+      createdAt: now,
+    });
     state.processingJobs.unshift(job);
     state.dataOperationReceipts.unshift(receipt);
     state.auditEvents.push(
@@ -803,6 +1050,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    assertPaidAction(state, context.membership, "manageProjects");
     const project = findProject(state, context.organization.id, projectId);
     if (input.confirmationName.trim() !== project.name) {
       throw new ApiError(400, "Type the project name exactly to confirm deletion.", "confirmation_mismatch");
@@ -846,6 +1094,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    requirePermission(context.membership, "manageProjects");
     const project = findProject(state, context.organization.id, input.projectId);
     const job = state.processingJobs.find((item) => item.id === input.jobId && item.projectId === project.id);
     if (!job) throw new Error("Project deletion job not found.");
@@ -893,6 +1142,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    requirePermission(context.membership, "manageSettings");
     findProject(state, context.organization.id, input.projectId);
     const receipt = await purgeRawProjectDataInState(state, this.rootDir, actor, input);
     await this.save(state);
@@ -904,6 +1154,8 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    assertPaidAction(state, context.membership, "runGenerations");
+    assertQuota(state, context.organization.id, "openai_generations", 1);
     const project = findProject(state, context.organization.id, projectId);
     const evalCases = state.evalCases.filter((item) => item.projectId === project.id);
     const activeGraders = state.graders.filter((item) => item.projectId === project.id && item.active);
@@ -949,6 +1201,18 @@ class LocalEvalOpsStore implements EvalOpsStore {
     run.totalResults = results.length;
     run.completedAt = new Date().toISOString();
     state.evalRuns.unshift(run);
+    state.usageEvents.push({
+      id: makeId("usage"),
+      organizationId: project.organizationId,
+      projectId: project.id,
+      metric: "openai_generations",
+      quantity: 1,
+      source: "eval_run.manual",
+      sourceId: run.id,
+      periodStart: getCurrentMonthlyPeriod(new Date(now)).periodStart,
+      metadata: { totalCases: run.totalCases, totalResults: run.totalResults },
+      createdAt: now,
+    });
     state.evalResults = [
       ...results,
       ...state.evalResults.filter((item) => item.projectId !== project.id || item.evalRunId !== run.id),
@@ -983,6 +1247,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    requirePermission(context.membership, "reviewEvals");
     const evalCase = state.evalCases.find(
       (item) => item.id === input.evalCaseId && item.organizationId === context.organization.id,
     );
@@ -1029,6 +1294,8 @@ class LocalEvalOpsStore implements EvalOpsStore {
     return this.withWriteLock(async () => {
     const state = await this.load();
     const context = requireMembership(state, actor);
+    assertPaidAction(state, context.membership, "runGenerations");
+    assertQuota(state, context.organization.id, "openai_generations", 1);
     const project = findProject(state, context.organization.id, projectId);
     const candidate = state.promptCandidates.find(
       (item) => item.id === candidateId && item.projectId === project.id,
@@ -1047,6 +1314,18 @@ class LocalEvalOpsStore implements EvalOpsStore {
       if (item.projectId === project.id) item.status = "candidate";
     });
     state.promptVersions.unshift(promptVersion);
+    state.usageEvents.push({
+      id: makeId("usage"),
+      organizationId: project.organizationId,
+      projectId: project.id,
+      metric: "openai_generations",
+      quantity: 1,
+      source: "prompt.promoted",
+      sourceId: promptVersion.id,
+      periodStart: getCurrentMonthlyPeriod(new Date(promptVersion.createdAt)).periodStart,
+      metadata: { candidateId },
+      createdAt: promptVersion.createdAt,
+    });
     state.auditEvents.push(
       audit(actor, project.organizationId, "prompt_version", promptVersion.id, "prompt.promoted", {
         candidateId,
@@ -1083,18 +1362,10 @@ class LocalEvalOpsStore implements EvalOpsStore {
 }
 
 function ensureLocalMembership(state: LocalState, actor: ActorContext) {
-  const organizationId = actor.organizationId || `org_${actor.userId}`;
+  const user = ensureLocalUser(state, actor);
+  const existingMemberships = state.memberships.filter((item) => item.userId === actor.userId);
+  const organizationId = actor.organizationId || existingMemberships[0]?.organizationId || `org_${actor.userId}`;
   const now = new Date().toISOString();
-  let user = state.users.find((item) => item.id === actor.userId);
-  if (!user) {
-    user = {
-      id: actor.userId,
-      email: actor.email || `${actor.userId}@local.test`,
-      displayName: actor.email?.split("@")[0] || "EvalOps Reviewer",
-      createdAt: now,
-    };
-    state.users.push(user);
-  }
   let organization = state.organizations.find((item) => item.id === organizationId);
   if (!organization) {
     organization = {
@@ -1122,13 +1393,26 @@ function ensureLocalMembership(state: LocalState, actor: ActorContext) {
       createdAt: now,
     };
     state.memberships.push(membership);
+    state.usageEvents.push({
+      id: makeId("usage"),
+      organizationId,
+      metric: "seats",
+      quantity: 1,
+      source: "workspace.created",
+      sourceId: membership.id,
+      periodStart: getCurrentMonthlyPeriod(new Date(now)).periodStart,
+      metadata: { role: membership.role },
+      createdAt: now,
+    });
   }
+  ensureBillingRecord(state, organizationId);
   return { user, organization, membership };
 }
 
 function requireMembership(state: LocalState, actor: ActorContext) {
-  const organizationId = actor.organizationId || `org_${actor.userId}`;
-  const user = state.users.find((item) => item.id === actor.userId);
+  const user = ensureLocalUser(state, actor);
+  const existingMemberships = state.memberships.filter((item) => item.userId === actor.userId);
+  const organizationId = actor.organizationId || existingMemberships[0]?.organizationId || `org_${actor.userId}`;
   const organization = state.organizations.find((item) => item.id === organizationId);
   const membership = state.memberships.find(
     (item) => item.organizationId === organizationId && item.userId === actor.userId,
@@ -1136,7 +1420,23 @@ function requireMembership(state: LocalState, actor: ActorContext) {
   if (!user || !organization || !membership) {
     throw new Error("Workspace not found for this user.");
   }
+  ensureBillingRecord(state, organizationId);
   return { user, organization, membership };
+}
+
+function ensureLocalUser(state: LocalState, actor: ActorContext) {
+  const now = new Date().toISOString();
+  let user = state.users.find((item) => item.id === actor.userId);
+  if (!user) {
+    user = {
+      id: actor.userId,
+      email: actor.email || `${actor.userId}@local.test`,
+      displayName: actor.email?.split("@")[0] || "EvalOps Reviewer",
+      createdAt: now,
+    };
+    state.users.push(user);
+  }
+  return user;
 }
 
 function selectWorkspace(
@@ -1163,6 +1463,15 @@ function selectWorkspace(
     organization,
     user,
     membership,
+    billing: buildBillingOverview(state, organizationId),
+    members: state.memberships.filter((item) => item.organizationId === organizationId),
+    invitations: state.invitations
+      .filter((item) => item.organizationId === organizationId)
+      .map(stripInvitationToken),
+    supportRequests: state.supportRequests
+      .filter((item) => item.organizationId === organizationId)
+      .slice()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     projects,
     activeProject,
     traceImports: currentProjectId
@@ -1208,6 +1517,119 @@ function findProject(state: LocalState, organizationId: string, projectId: strin
   );
   if (!project) throw new Error("Project not found for this organization.");
   return project;
+}
+
+function ensureBillingRecord(state: LocalState, organizationId: string): OrganizationBilling {
+  const now = new Date().toISOString();
+  let billing = state.organizationBilling.find((item) => item.organizationId === organizationId);
+  if (!billing) {
+    billing = {
+      organizationId,
+      planId: "starter",
+      status: "trialing",
+      cancelAtPeriodEnd: false,
+      metadata: {},
+      createdAt: now,
+      updatedAt: now,
+    };
+    state.organizationBilling.push(billing);
+  }
+  return billing;
+}
+
+function buildBillingOverview(state: LocalState, organizationId: string): BillingOverview {
+  const billing = ensureBillingRecord(state, organizationId);
+  const period = getCurrentMonthlyPeriod();
+  const usage = summarizeUsage(
+    state.usageEvents
+      .filter((event) => event.organizationId === organizationId)
+      .map((event) => ({
+        metric: event.metric,
+        quantity: event.quantity,
+        occurredAt: event.createdAt,
+      })),
+    period,
+  );
+  usage.projects = state.projects.filter((item) => item.organizationId === organizationId && item.status === "active").length;
+  usage.seats =
+    state.memberships.filter((item) => item.organizationId === organizationId).length +
+    state.invitations.filter((item) => item.organizationId === organizationId && item.status === "pending" && !isInviteExpired(item.expiresAt)).length;
+  return {
+    billing,
+    usage,
+    period,
+    canUseFeatures: canUseBillingFeatures(billing.status),
+  };
+}
+
+function assertFeatureAccess(state: LocalState, organizationId: string) {
+  const billing = ensureBillingRecord(state, organizationId);
+  if (!canUseBillingFeatures(billing.status)) {
+    throw new ApiError(
+      402,
+      "Start a trial or update billing before using paid EvalOps actions.",
+      "payment_required",
+    );
+  }
+}
+
+function assertQuota(
+  state: LocalState,
+  organizationId: string,
+  metric: Parameters<typeof canConsumeQuota>[0]["metric"],
+  quantity = 1,
+) {
+  const overview = buildBillingOverview(state, organizationId);
+  const decision = canConsumeQuota({
+    planId: overview.billing.planId,
+    metric,
+    currentUsage: overview.usage[metric],
+    quantity,
+  });
+  if (!decision.allowed) {
+    throw new ApiError(
+      409,
+      `The ${overview.billing.planId} plan limit for ${metric.replace(/_/g, " ")} has been reached.`,
+      "quota_exceeded",
+    );
+  }
+}
+
+function requirePermission(membership: OrganizationMembership, permission: RolePermission) {
+  if (!canPerformPermission(membership.role, permission)) {
+    throw new ApiError(403, "Your role does not allow this action.", "forbidden");
+  }
+}
+
+function assertPaidAction(state: LocalState, membership: OrganizationMembership, permission: RolePermission) {
+  requirePermission(membership, permission);
+  assertFeatureAccess(state, membership.organizationId);
+}
+
+function assertCanChangeOwner(state: LocalState, organizationId: string, membershipId: string) {
+  const otherOwners = state.memberships.filter(
+    (item) => item.organizationId === organizationId && item.role === "owner" && item.id !== membershipId,
+  );
+  if (!otherOwners.length) {
+    throw new ApiError(409, "Every organization needs at least one owner.", "last_owner");
+  }
+}
+
+function stripInvitationToken(invitation: OrganizationInvitation & { tokenHash: string }): OrganizationInvitation {
+  const safeInvitation = {
+    id: invitation.id,
+    organizationId: invitation.organizationId,
+    email: invitation.email,
+    role: invitation.role,
+    status: invitation.status,
+    invitedBy: invitation.invitedBy,
+    acceptedBy: invitation.acceptedBy,
+    expiresAt: invitation.expiresAt,
+    acceptedAt: invitation.acceptedAt,
+    createdAt: invitation.createdAt,
+    updatedAt: invitation.updatedAt,
+  };
+  return safeInvitation;
 }
 
 async function purgeRawProjectDataInState(

@@ -44,6 +44,6 @@ export async function getActorFromRequest(request: NextRequest): Promise<ActorCo
   return {
     userId: user.id,
     email: user.email,
-    organizationId: `org_${user.id}`,
+    organizationId: request.cookies.get("evalops_org_id")?.value,
   };
 }

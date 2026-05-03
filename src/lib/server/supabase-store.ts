@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { TraceImport } from "../domain/audit";
 import {
@@ -12,6 +12,10 @@ import { executeDeterministicGrader, summarizeEvalResults } from "../domain/eval
 import { generateAuditArtifacts, type AuditArtifacts } from "@/lib/ai/openai-audit-generation";
 import { buildAuditReportPdf } from "./audit-report-pdf";
 import { ApiError } from "./auth";
+import { canUseBillingFeatures } from "./commercial/plans";
+import { canConsumeQuota, getCurrentMonthlyPeriod, summarizeUsage } from "./commercial/usage";
+import { canInviteRole, createInviteTokenHash, isInviteExpired, verifyInviteToken } from "./commercial/invites";
+import { canPerformPermission, type RolePermission } from "./permissions";
 import { createSupabaseAdminClient } from "./supabase-admin";
 import {
   buildFullProjectExportPackage,
@@ -23,9 +27,12 @@ import {
 import type {
   ActorContext,
   AuditEvent,
+  BillingOverview,
   CacheRecommendation,
   CreateExportInput,
+  CreateOrganizationInvitationInput,
   CreateProjectInput,
+  CreateSupportRequestInput,
   CreateTraceImportInput,
   DataOperationReceipt,
   DeleteProjectInput,
@@ -37,6 +44,8 @@ import type {
   StoredGraderCalibrationResult,
   IssueComment,
   Organization,
+  OrganizationBilling,
+  OrganizationInvitation,
   OrganizationMembership,
   ProcessingJob,
   ProcessFullProjectExportInput,
@@ -46,6 +55,7 @@ import type {
   PromptCandidate,
   PromptVersion,
   PurgeRawProjectDataInput,
+  RecordUsageInput,
   Report,
   RoutingRule,
   StoredEvalCase,
@@ -54,7 +64,11 @@ import type {
   StoredHumanLabel,
   StoredIssue,
   StoredTrace,
+  StoredUsageEvent,
+  SupportRequest,
   UpdateGraderInput,
+  UpdateOrganizationBillingInput,
+  UpdateOrganizationMemberInput,
   UpdateProjectSettingsInput,
   UpsertHumanLabelInput,
   UploadedFile,
@@ -71,16 +85,38 @@ export async function createSupabaseEvalOpsStore(): Promise<EvalOpsStore> {
 class SupabaseEvalOpsStore implements EvalOpsStore {
   constructor(private readonly db: DbClient) {}
 
-  async ensureWorkspace(actor: ActorContext) {
+  async ensureWorkspace(actor: ActorContext): Promise<WorkspaceState> {
     const now = new Date().toISOString();
-    const organizationId = actor.organizationId || `org_${actor.userId}`;
-    const organizationName = actor.email ? `${actor.email.split("@")[0]}'s workspace` : "EvalOps Workspace";
     const user = {
       id: actor.userId,
       email: actor.email || `${actor.userId}@evalops.local`,
       display_name: actor.email?.split("@")[0] || "EvalOps Reviewer",
       updated_at: now,
     };
+    await checked(this.db.from("profiles").upsert(user, { onConflict: "id" }));
+
+    const { data: existingMemberships } = await checked(
+      this.db
+        .from("organization_memberships")
+        .select("*, organizations(*)")
+        .eq("user_id", actor.userId)
+        .order("created_at"),
+    );
+    const selectedMembership = actor.organizationId
+      ? (existingMemberships || []).find((item: any) => item.organization_id === actor.organizationId)
+      : (existingMemberships || [])[0];
+
+    if (selectedMembership?.organizations) {
+      await this.ensureBillingRow(selectedMembership.organization_id);
+      return this.getWorkspaceState({ ...actor, organizationId: selectedMembership.organization_id });
+    }
+
+    if (actor.organizationId) {
+      throw new ApiError(403, "You are not a member of that organization.", "organization_forbidden");
+    }
+
+    const organizationId = `org_${actor.userId}`;
+    const organizationName = actor.email ? `${actor.email.split("@")[0]}'s workspace` : "EvalOps Workspace";
     const organization = {
       id: organizationId,
       name: organizationName,
@@ -94,21 +130,31 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       role: "owner",
     };
 
-    await checked(this.db.from("profiles").upsert(user, { onConflict: "id" }));
     await checked(this.db.from("organizations").upsert(organization, { onConflict: "id" }));
     await checked(
       this.db.from("organization_memberships").upsert(membership, {
         onConflict: "organization_id,user_id",
       }),
     );
+    await this.ensureBillingRow(organizationId);
+    await this.insertUsage({
+      organizationId,
+      metric: "seats",
+      quantity: 1,
+      source: "workspace.created",
+      sourceId: membership.id,
+      metadata: { role: "owner" },
+      createdAt: now,
+    });
     await this.audit(actor, organizationId, "organization", organizationId, "organization.created", {
       name: organizationName,
     });
-    return this.getWorkspaceState(actor);
+    return this.getWorkspaceState({ ...actor, organizationId });
   }
 
-  async getWorkspaceState(actor: ActorContext, projectId?: string) {
-    const organizationId = actor.organizationId || `org_${actor.userId}`;
+  async getWorkspaceState(actor: ActorContext, projectId?: string): Promise<WorkspaceState> {
+    const membershipContext: { organizationId: string; membership: OrganizationMembership } = await this.resolveMembership(actor);
+    const organizationId: string = membershipContext.organizationId;
     const [{ data: user }, { data: organization }, { data: membership }, { data: projects }] =
       await Promise.all([
         checked(this.db.from("profiles").select("*").eq("id", actor.userId).single()),
@@ -139,9 +185,13 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       : emptyProjectRecords();
 
     return {
-      organization: mapOrganization(organization),
+      organization: mapOrganization(organization as any),
       user: mapProfile(user),
       membership: mapMembership(membership),
+      billing: await this.buildBillingOverview(organizationId),
+      members: await this.listOrganizationMembers(organizationId),
+      invitations: await this.listOrganizationInvitations(organizationId),
+      supportRequests: await this.listSupportRequests(organizationId),
       projects: mappedProjects,
       activeProject,
       ...scoped,
@@ -156,9 +206,214 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
     return state;
   }
 
+  async listOrganizations(actor: ActorContext) {
+    await checked(
+      this.db.from("profiles").upsert({
+        id: actor.userId,
+        email: actor.email || `${actor.userId}@evalops.local`,
+        display_name: actor.email?.split("@")[0] || "EvalOps Reviewer",
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "id" }),
+    );
+    const { data } = await checked(
+      this.db
+        .from("organization_memberships")
+        .select("*, organizations(*)")
+        .eq("user_id", actor.userId)
+        .order("created_at"),
+    );
+    return (data || [])
+      .filter((item: any) => item.organizations)
+      .map((item: any) => ({
+        organization: mapOrganization(item.organizations),
+        membership: mapMembership(item),
+      }));
+  }
+
+  async getBillingOverview(actor: ActorContext) {
+    const context = await this.resolveMembership(actor);
+    return this.buildBillingOverview(context.organizationId);
+  }
+
+  async updateOrganizationBilling(actor: ActorContext, input: UpdateOrganizationBillingInput) {
+    const organizationId = input.organizationId || (await this.resolveMembership(actor)).organizationId;
+    await this.ensureBillingRow(organizationId);
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (input.planId !== undefined) patch.plan_id = input.planId;
+    if (input.status !== undefined) patch.status = input.status;
+    if (input.stripeCustomerId !== undefined) patch.stripe_customer_id = input.stripeCustomerId;
+    if (input.stripeSubscriptionId !== undefined) patch.stripe_subscription_id = input.stripeSubscriptionId;
+    if (input.stripePriceId !== undefined) patch.stripe_price_id = input.stripePriceId;
+    if (input.stripeCurrentPeriodStart !== undefined) patch.stripe_current_period_start = input.stripeCurrentPeriodStart;
+    if (input.stripeCurrentPeriodEnd !== undefined) patch.stripe_current_period_end = input.stripeCurrentPeriodEnd;
+    if (input.trialEndsAt !== undefined) patch.trial_ends_at = input.trialEndsAt;
+    if (input.cancelAtPeriodEnd !== undefined) patch.cancel_at_period_end = input.cancelAtPeriodEnd;
+    if (input.metadata !== undefined) patch.metadata = input.metadata;
+    const { data } = await checked(
+      this.db.from("organization_billing").update(patch).eq("organization_id", organizationId).select("*").single(),
+    );
+    return mapOrganizationBilling(data);
+  }
+
+  async recordUsage(actor: ActorContext, input: RecordUsageInput) {
+    const context = await this.resolveMembership(actor);
+    return this.insertUsage({
+      organizationId: input.organizationId || context.organizationId,
+      projectId: input.projectId,
+      metric: input.metric,
+      quantity: input.quantity || 1,
+      source: input.source,
+      sourceId: input.sourceId,
+      metadata: input.metadata || {},
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  async hasProcessedStripeEvent(eventId: string) {
+    const { data } = await checked(this.db.from("stripe_events").select("id").eq("id", eventId).maybeSingle());
+    return Boolean(data);
+  }
+
+  async recordStripeEvent(input: { id: string; type: string; livemode: boolean; payload: Record<string, unknown> }) {
+    await checked(this.db.from("stripe_events").upsert({
+      id: input.id,
+      type: input.type,
+      livemode: input.livemode,
+      payload: input.payload,
+      processed_at: new Date().toISOString(),
+    }, { onConflict: "id" }));
+  }
+
+  async findOrganizationBillingByStripeCustomer(stripeCustomerId: string) {
+    const { data } = await checked(
+      this.db.from("organization_billing").select("*").eq("stripe_customer_id", stripeCustomerId).maybeSingle(),
+    );
+    return data ? mapOrganizationBilling(data) : undefined;
+  }
+
+  async createOrganizationInvitation(actor: ActorContext, input: CreateOrganizationInvitationInput) {
+    const state = await this.ensureWorkspace(actor);
+    requirePermission(state.membership, "manageMembers");
+    if (!canInviteRole({ inviterRole: state.membership.role, inviteeRole: input.role })) {
+      throw new ApiError(403, "You cannot invite that role.", "forbidden_role");
+    }
+    await this.assertQuota(state.organization.id, "seats", 1);
+    const now = new Date();
+    const token = randomBytes(24).toString("base64url");
+    const row = {
+      id: id("invite"),
+      organization_id: state.organization.id,
+      email: input.email.toLowerCase(),
+      role: input.role,
+      token_hash: createInviteTokenHash(token),
+      status: "pending",
+      invited_by: actor.userId,
+      expires_at: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    };
+    const { data } = await checked(this.db.from("organization_invitations").insert(row).select("*").single());
+    return { invitation: mapInvitation(data), token };
+  }
+
+  async acceptOrganizationInvitation(actor: ActorContext, token: string) {
+    await checked(
+      this.db.from("profiles").upsert({
+        id: actor.userId,
+        email: actor.email || `${actor.userId}@evalops.local`,
+        display_name: actor.email?.split("@")[0] || "EvalOps Reviewer",
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "id" }),
+    );
+    const { data: pending } = await checked(
+      this.db.from("organization_invitations").select("*").eq("status", "pending"),
+    );
+    const invitation = (pending || []).find((item: any) => verifyInviteToken(token, item.token_hash));
+    if (!invitation) throw new ApiError(404, "Invitation not found or already used.", "invitation_not_found");
+    const now = new Date().toISOString();
+    if (isInviteExpired(invitation.expires_at)) {
+      await checked(this.db.from("organization_invitations").update({ status: "expired", updated_at: now }).eq("id", invitation.id));
+      throw new ApiError(410, "Invitation has expired.", "invitation_expired");
+    }
+    const membership = {
+      id: stableId("mem", invitation.organization_id, actor.userId),
+      organization_id: invitation.organization_id,
+      user_id: actor.userId,
+      role: invitation.role,
+      created_at: now,
+    };
+    const { data } = await checked(
+      this.db.from("organization_memberships").upsert(membership, { onConflict: "organization_id,user_id" }).select("*").single(),
+    );
+    await checked(
+      this.db.from("organization_invitations").update({
+        status: "accepted",
+        accepted_by: actor.userId,
+        accepted_at: now,
+        updated_at: now,
+      }).eq("id", invitation.id),
+    );
+    await this.insertUsage({
+      organizationId: invitation.organization_id,
+      metric: "seats",
+      quantity: 1,
+      source: "invitation.accepted",
+      sourceId: invitation.id,
+      metadata: { role: invitation.role },
+      createdAt: now,
+    });
+    return mapMembership(data);
+  }
+
+  async updateOrganizationMember(actor: ActorContext, input: UpdateOrganizationMemberInput) {
+    const state = await this.ensureWorkspace(actor);
+    requirePermission(state.membership, "manageMembers");
+    const member = state.members.find((item) => item.id === input.membershipId);
+    if (!member) throw new ApiError(404, "Member not found.", "member_not_found");
+    if (member.role === "owner" && input.role !== "owner") {
+      await this.assertCanChangeOwner(state.organization.id, member.id);
+    }
+    const { data } = await checked(
+      this.db.from("organization_memberships").update({ role: input.role }).eq("id", input.membershipId).eq("organization_id", state.organization.id).select("*").single(),
+    );
+    return mapMembership(data);
+  }
+
+  async removeOrganizationMember(actor: ActorContext, membershipId: string) {
+    const state = await this.ensureWorkspace(actor);
+    requirePermission(state.membership, "manageMembers");
+    const member = state.members.find((item) => item.id === membershipId);
+    if (!member) throw new ApiError(404, "Member not found.", "member_not_found");
+    if (member.role === "owner") await this.assertCanChangeOwner(state.organization.id, member.id);
+    await checked(this.db.from("organization_memberships").delete().eq("id", membershipId).eq("organization_id", state.organization.id));
+  }
+
+  async createSupportRequest(actor: ActorContext, input: CreateSupportRequestInput) {
+    const state = await this.ensureWorkspace(actor);
+    const now = new Date().toISOString();
+    const row = {
+      id: id("support"),
+      organization_id: state.organization.id,
+      project_id: input.projectId || null,
+      actor_user_id: actor.userId,
+      request_type: input.requestType,
+      priority: input.priority || "normal",
+      subject: input.subject,
+      message: input.message,
+      status: "open",
+      metadata: {},
+      created_at: now,
+      updated_at: now,
+    };
+    const { data } = await checked(this.db.from("support_requests").insert(row).select("*").single());
+    return mapSupportRequest(data);
+  }
+
   async createProject(actor: ActorContext, input: CreateProjectInput) {
-    await this.ensureWorkspace(actor);
-    const organizationId = actor.organizationId || `org_${actor.userId}`;
+    const workspace = await this.ensureWorkspace(actor);
+    this.assertPaidAction(workspace, "manageProjects");
+    await this.assertQuota(workspace.organization.id, "projects", 1);
+    const organizationId = workspace.organization.id;
     const now = new Date().toISOString();
     const projectRow = {
       id: id("proj"),
@@ -173,6 +428,16 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       updated_at: now,
     };
     const { data } = await checked(this.db.from("projects").insert(projectRow).select("*").single());
+    await this.insertUsage({
+      organizationId,
+      projectId: projectRow.id,
+      metric: "projects",
+      quantity: 1,
+      source: "project.created",
+      sourceId: projectRow.id,
+      metadata: { workflowType: input.workflowType },
+      createdAt: now,
+    });
     await this.seedOptimization(actor, organizationId, projectRow.id);
     await this.audit(actor, organizationId, "project", projectRow.id, "project.created", {
       workflowType: input.workflowType,
@@ -183,6 +448,7 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
 
   async updateProjectSettings(actor: ActorContext, projectId: string, input: UpdateProjectSettingsInput) {
     const state: WorkspaceState = await this.getProjectState(actor, projectId);
+    this.assertPaidAction(state, "manageSettings");
     const project = state.activeProject;
     if (!project) throw new Error("Project not found for this organization.");
     const shouldPurgeRaw =
@@ -216,6 +482,8 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
 
   async createTraceImport(actor: ActorContext, input: CreateTraceImportInput) {
     const state: WorkspaceState = await this.getProjectState(actor, input.projectId);
+    this.assertPaidAction(state, "uploadTraces");
+    await this.assertQuota(state.organization.id, "uploads", 1);
     const project = state.activeProject;
     if (!project) throw new Error("Project not found for this organization.");
     const now = new Date().toISOString();
@@ -303,6 +571,16 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
     );
     await checked(this.db.from("uploaded_files").insert(toUploadedFileRow(uploadedFile)));
     await checked(this.db.from("processing_jobs").insert(toProcessingJobRow(job)));
+    await this.insertUsage({
+      organizationId: project.organizationId,
+      projectId: project.id,
+      metric: "uploads",
+      quantity: 1,
+      source: "trace_import.created",
+      sourceId: traceImportId,
+      metadata: { fileName: input.fileName },
+      createdAt: now,
+    });
     await this.audit(actor, project.organizationId, "uploaded_file", uploadedFile.id, "file.uploaded", {
       storagePath,
       sizeBytes: uploadedFile.sizeBytes,
@@ -316,6 +594,8 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
 
   async processTraceImport(actor: ActorContext, input: ProcessTraceImportInput) {
     const state: WorkspaceState = await this.getProjectState(actor, input.projectId);
+    this.assertPaidAction(state, "runGenerations");
+    await this.assertQuota(state.organization.id, "openai_generations", 1);
     const project = state.activeProject;
     if (!project) throw new Error("Project not found for this organization.");
     const importRecord = state.traceImports.find((item) => item.id === input.traceImportId);
@@ -376,6 +656,19 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       const artifacts = await generateAuditArtifacts({
         project,
         traces: traces as Array<NormalizedTrace & { id: string }>,
+      });
+      await this.insertUsage({
+        organizationId: project.organizationId,
+        projectId: project.id,
+        metric: "openai_generations",
+        quantity: 1,
+        source: "trace_import.processed",
+        sourceId: importRecord.id,
+        metadata: {
+          provider: artifacts.generationMetadata?.provider,
+          model: artifacts.generationMetadata?.model,
+        },
+        createdAt: new Date().toISOString(),
       });
       await this.insertArtifacts(actor, project, artifacts, traces, {
         traceImportId: importRecord.id,
@@ -466,7 +759,9 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
   }
 
   async updateIssue(actor: ActorContext, input: { issueId: string; status: StoredIssue["status"]; comment?: string }) {
-    const organizationId = actor.organizationId || `org_${actor.userId}`;
+    const context = await this.resolveMembership(actor);
+    requirePermission(context.membership, "reviewEvals");
+    const organizationId = context.organizationId;
     const { data: existing } = await checked(
       this.db
         .from("review_issues")
@@ -511,7 +806,10 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
   }
 
   async updateGrader(actor: ActorContext, input: UpdateGraderInput) {
-    const organizationId = actor.organizationId || `org_${actor.userId}`;
+    const context = await this.resolveMembership(actor);
+    const state = await this.getWorkspaceState({ ...actor, organizationId: context.organizationId });
+    this.assertPaidAction(state, "runGenerations");
+    const organizationId = context.organizationId;
     const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
     if (input.description !== undefined) patch.description = input.description.trim();
     if (input.active !== undefined) patch.active = input.active;
@@ -538,7 +836,9 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
   }
 
   async updateEvalCase(actor: ActorContext, input: Parameters<EvalOpsStore["updateEvalCase"]>[1]) {
-    const organizationId = actor.organizationId || `org_${actor.userId}`;
+    const context = await this.resolveMembership(actor);
+    requirePermission(context.membership, "reviewEvals");
+    const organizationId = context.organizationId;
     const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
     if (input.userInput !== undefined) patch.user_input = input.userInput;
     if (input.expectedBehavior !== undefined) patch.expected_behavior = input.expectedBehavior;
@@ -560,6 +860,8 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
 
   async createExport(actor: ActorContext, projectId: string, input: CreateExportInput = {}) {
     const state: WorkspaceState = await this.getProjectState(actor, projectId);
+    this.assertPaidAction(state, "exportReports");
+    await this.assertQuota(state.organization.id, "exports", 1);
     const project = state.activeProject;
     if (!project) throw new Error("Project not found for this organization.");
     const type = input.type || "eval_pack_csv";
@@ -594,6 +896,16 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
         }),
     );
     await checked(this.db.from("exports").insert(toExportRow(exportRecord)));
+    await this.insertUsage({
+      organizationId: project.organizationId,
+      projectId: project.id,
+      metric: "exports",
+      quantity: 1,
+      source: "export.generated",
+      sourceId: exportRecord.id,
+      metadata: { type },
+      createdAt: exportRecord.createdAt,
+    });
     await this.audit(actor, project.organizationId, "export", exportRecord.id, "export.generated", {
       caseCount: state.evalCases.length,
       issueCount: state.issues.length,
@@ -602,7 +914,7 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
   }
 
   async getExport(actor: ActorContext, exportId: string) {
-    const organizationId = actor.organizationId || `org_${actor.userId}`;
+    const { organizationId } = await this.resolveMembership(actor);
     const { data } = await checked(
       this.db.from("exports").select("*").eq("organization_id", organizationId).eq("id", exportId).single(),
     );
@@ -618,6 +930,8 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
 
   async requestFullProjectExport(actor: ActorContext, projectId: string) {
     const state: WorkspaceState = await this.getProjectState(actor, projectId);
+    this.assertPaidAction(state, "exportReports");
+    await this.assertQuota(state.organization.id, "exports", 1);
     const project = state.activeProject;
     if (!project) throw new Error("Project not found for this organization.");
     const now = new Date().toISOString();
@@ -662,6 +976,16 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
     await checked(this.db.from("exports").insert(toExportRow(exportRecord)));
     await checked(this.db.from("processing_jobs").insert(toProcessingJobRow(job)));
     await checked(this.db.from("data_operation_receipts").insert(toDataOperationReceiptRow(receipt)));
+    await this.insertUsage({
+      organizationId: project.organizationId,
+      projectId: project.id,
+      metric: "exports",
+      quantity: 1,
+      source: "project_export.requested",
+      sourceId: exportRecord.id,
+      metadata: { type: exportRecord.type },
+      createdAt: now,
+    });
     await this.audit(actor, project.organizationId, "export", exportRecord.id, "project_export.requested", {
       projectId: project.id,
       receiptId: receipt.id,
@@ -771,6 +1095,7 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
 
   async requestProjectDeletion(actor: ActorContext, projectId: string, input: DeleteProjectInput) {
     const state: WorkspaceState = await this.getProjectState(actor, projectId);
+    this.assertPaidAction(state, "manageProjects");
     const project = state.activeProject;
     if (!project) throw new Error("Project not found for this organization.");
     if (input.confirmationName.trim() !== project.name) {
@@ -872,6 +1197,7 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
 
   async purgeRawProjectData(actor: ActorContext, input: PurgeRawProjectDataInput) {
     const state: WorkspaceState = await this.getProjectState(actor, input.projectId);
+    requirePermission(state.membership, "manageSettings");
     const project = state.activeProject;
     if (!project) throw new Error("Project not found for this organization.");
     const now = input.now || new Date().toISOString();
@@ -945,6 +1271,8 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
 
   async rerunEvaluation(actor: ActorContext, projectId: string) {
     const state: WorkspaceState = await this.getProjectState(actor, projectId);
+    this.assertPaidAction(state, "runGenerations");
+    await this.assertQuota(state.organization.id, "openai_generations", 1);
     const project = state.activeProject;
     if (!project) throw new Error("Project not found for this organization.");
     const now = new Date().toISOString();
@@ -1015,6 +1343,16 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
         .eq("organization_id", project.organizationId)
         .eq("id", run.id),
     );
+    await this.insertUsage({
+      organizationId: project.organizationId,
+      projectId: project.id,
+      metric: "openai_generations",
+      quantity: 1,
+      source: "eval_run.manual",
+      sourceId: run.id,
+      metadata: { totalCases: run.totalCases, totalResults: run.totalResults },
+      createdAt: now,
+    });
     await this.audit(actor, project.organizationId, "eval_run", run.id, "review_rule.executed", {
       totalCases: run.totalCases,
       totalResults: run.totalResults,
@@ -1025,7 +1363,9 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
   }
 
   async upsertHumanLabel(actor: ActorContext, input: UpsertHumanLabelInput) {
-    const organizationId = actor.organizationId || `org_${actor.userId}`;
+    const context = await this.resolveMembership(actor);
+    requirePermission(context.membership, "reviewEvals");
+    const organizationId = context.organizationId;
     const { data: evalCase } = await checked(
       this.db
         .from("eval_cases")
@@ -1080,6 +1420,8 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
 
   async promotePromptCandidate(actor: ActorContext, projectId: string, candidateId: string) {
     const state: WorkspaceState = await this.getProjectState(actor, projectId);
+    this.assertPaidAction(state, "runGenerations");
+    await this.assertQuota(state.organization.id, "openai_generations", 1);
     const project = state.activeProject;
     if (!project) throw new Error("Project not found for this organization.");
     const candidate = state.promptCandidates.find((item) => item.id === candidateId);
@@ -1101,10 +1443,175 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       createdAt: new Date().toISOString(),
     };
     await checked(this.db.from("prompt_versions").insert(toPromptVersionRow(version)));
+    await this.insertUsage({
+      organizationId: project.organizationId,
+      projectId: project.id,
+      metric: "openai_generations",
+      quantity: 1,
+      source: "prompt.promoted",
+      sourceId: version.id,
+      metadata: { candidateId },
+      createdAt: version.createdAt,
+    });
     await this.audit(actor, project.organizationId, "prompt_version", version.id, "prompt.promoted", {
       candidateId,
     });
     return version;
+  }
+
+  private async resolveMembership(actor: ActorContext): Promise<{ organizationId: string; membership: OrganizationMembership }> {
+    const { data } = await checked(
+      this.db
+        .from("organization_memberships")
+        .select("*")
+        .eq("user_id", actor.userId)
+        .order("created_at"),
+    );
+    const membership = actor.organizationId
+      ? (data || []).find((item: any) => item.organization_id === actor.organizationId)
+      : (data || [])[0];
+    if (!membership) {
+      const workspace: WorkspaceState = await this.ensureWorkspace(actor);
+      return { organizationId: workspace.organization.id, membership: workspace.membership };
+    }
+    return { organizationId: membership.organization_id as string, membership: mapMembership(membership) };
+  }
+
+  private async ensureBillingRow(organizationId: string) {
+    const now = new Date().toISOString();
+    const existing = await checked(
+      this.db.from("organization_billing").select("*").eq("organization_id", organizationId).maybeSingle(),
+    );
+    if (existing.data) return mapOrganizationBilling(existing.data);
+    const { data } = await checked(
+      this.db.from("organization_billing").insert({
+        organization_id: organizationId,
+        plan_id: "starter",
+        status: "setup_required",
+        cancel_at_period_end: false,
+        metadata: {},
+        created_at: now,
+        updated_at: now,
+      }).select("*").single(),
+    );
+    return mapOrganizationBilling(data);
+  }
+
+  private async buildBillingOverview(organizationId: string): Promise<BillingOverview> {
+    const billing = await this.ensureBillingRow(organizationId);
+    const period = getCurrentMonthlyPeriod();
+    const { data: usageRows } = await checked(
+      this.db
+        .from("usage_events")
+        .select("*")
+        .eq("organization_id", organizationId)
+        .gte("created_at", period.periodStart)
+        .lt("created_at", period.periodEnd),
+    );
+    const usage = summarizeUsage(
+      (usageRows || []).map((row: any) => ({
+        metric: row.metric,
+        quantity: Number(row.quantity),
+        occurredAt: row.created_at,
+      })),
+      period,
+    );
+    const [{ count: projectCount }, { count: memberCount }, { count: inviteCount }] = await Promise.all([
+      checked(this.db.from("projects").select("id", { count: "exact", head: true }).eq("organization_id", organizationId).eq("status", "active")),
+      checked(this.db.from("organization_memberships").select("id", { count: "exact", head: true }).eq("organization_id", organizationId)),
+      checked(this.db.from("organization_invitations").select("id", { count: "exact", head: true }).eq("organization_id", organizationId).eq("status", "pending").gt("expires_at", new Date().toISOString())),
+    ]);
+    usage.projects = projectCount || 0;
+    usage.seats = (memberCount || 0) + (inviteCount || 0);
+    return {
+      billing,
+      usage,
+      period,
+      canUseFeatures: canUseBillingFeatures(billing.status),
+    };
+  }
+
+  private async assertQuota(organizationId: string, metric: Parameters<typeof canConsumeQuota>[0]["metric"], quantity = 1) {
+    const overview = await this.buildBillingOverview(organizationId);
+    const decision = canConsumeQuota({
+      planId: overview.billing.planId,
+      metric,
+      currentUsage: overview.usage[metric],
+      quantity,
+    });
+    if (!decision.allowed) {
+      throw new ApiError(
+        409,
+        `The ${overview.billing.planId} plan limit for ${metric.replace(/_/g, " ")} has been reached.`,
+        "quota_exceeded",
+      );
+    }
+  }
+
+  private assertPaidAction(state: WorkspaceState, permission: RolePermission) {
+    requirePermission(state.membership, permission);
+    if (!state.billing.canUseFeatures) {
+      throw new ApiError(
+        402,
+        "Start a trial or update billing before using paid EvalOps actions.",
+        "payment_required",
+      );
+    }
+  }
+
+  private async insertUsage(input: {
+    organizationId: string;
+    projectId?: string;
+    metric: StoredUsageEvent["metric"];
+    quantity: number;
+    source: string;
+    sourceId?: string;
+    metadata?: Record<string, unknown>;
+    createdAt: string;
+  }) {
+    const period = getCurrentMonthlyPeriod(new Date(input.createdAt));
+    const row = {
+      id: id("usage"),
+      organization_id: input.organizationId,
+      project_id: input.projectId || null,
+      metric: input.metric,
+      quantity: input.quantity,
+      source: input.source,
+      source_id: input.sourceId || null,
+      period_start: period.periodStart,
+      metadata: input.metadata || {},
+      created_at: input.createdAt,
+    };
+    const { data } = await checked(this.db.from("usage_events").insert(row).select("*").single());
+    return mapUsageEvent(data);
+  }
+
+  private async listOrganizationMembers(organizationId: string) {
+    const { data } = await checked(
+      this.db.from("organization_memberships").select("*").eq("organization_id", organizationId).order("created_at"),
+    );
+    return (data || []).map(mapMembership);
+  }
+
+  private async listOrganizationInvitations(organizationId: string) {
+    const { data } = await checked(
+      this.db.from("organization_invitations").select("*").eq("organization_id", organizationId).order("created_at", { ascending: false }),
+    );
+    return (data || []).map(mapInvitation);
+  }
+
+  private async listSupportRequests(organizationId: string) {
+    const { data } = await checked(
+      this.db.from("support_requests").select("*").eq("organization_id", organizationId).order("created_at", { ascending: false }),
+    );
+    return (data || []).map(mapSupportRequest);
+  }
+
+  private async assertCanChangeOwner(organizationId: string, membershipId: string) {
+    const { count } = await checked(
+      this.db.from("organization_memberships").select("id", { count: "exact", head: true }).eq("organization_id", organizationId).eq("role", "owner").neq("id", membershipId),
+    );
+    if (!count) throw new ApiError(409, "Every organization needs at least one owner.", "last_owner");
   }
 
   private async loadProjectRecords(organizationId: string, projectId: string) {
@@ -1624,6 +2131,12 @@ async function checked(result: any): Promise<any> {
   return resolved;
 }
 
+function requirePermission(membership: OrganizationMembership, permission: RolePermission) {
+  if (!canPerformPermission(membership.role, permission)) {
+    throw new ApiError(403, "Your role does not allow this action.", "forbidden");
+  }
+}
+
 async function removeStorageObjects(db: DbClient, objects: Array<{ bucket: string; path: string }>) {
   const byBucket = new Map<string, string[]>();
   objects.forEach((object) => {
@@ -1638,7 +2151,7 @@ async function removeStorageObjects(db: DbClient, objects: Array<{ bucket: strin
   }
 }
 
-function emptyProjectRecords(): Omit<WorkspaceState, "organization" | "user" | "membership" | "projects" | "activeProject" | "auditEvents"> {
+function emptyProjectRecords(): Omit<WorkspaceState, "organization" | "user" | "membership" | "billing" | "members" | "invitations" | "supportRequests" | "projects" | "activeProject" | "auditEvents"> {
   return {
     traceImports: [],
     traces: [],
@@ -1725,6 +2238,60 @@ const mapMembership = (row: any): OrganizationMembership => ({
   userId: row.user_id,
   role: row.role,
   createdAt: row.created_at,
+});
+const mapOrganizationBilling = (row: any): OrganizationBilling => ({
+  organizationId: row.organization_id,
+  planId: row.plan_id,
+  status: row.status,
+  stripeCustomerId: row.stripe_customer_id || undefined,
+  stripeSubscriptionId: row.stripe_subscription_id || undefined,
+  stripePriceId: row.stripe_price_id || undefined,
+  stripeCurrentPeriodStart: row.stripe_current_period_start || undefined,
+  stripeCurrentPeriodEnd: row.stripe_current_period_end || undefined,
+  trialEndsAt: row.trial_ends_at || undefined,
+  cancelAtPeriodEnd: Boolean(row.cancel_at_period_end),
+  metadata: row.metadata || {},
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+const mapUsageEvent = (row: any): StoredUsageEvent => ({
+  id: row.id,
+  organizationId: row.organization_id,
+  projectId: row.project_id || undefined,
+  metric: row.metric,
+  quantity: Number(row.quantity),
+  source: row.source,
+  sourceId: row.source_id || undefined,
+  periodStart: row.period_start,
+  metadata: row.metadata || {},
+  createdAt: row.created_at,
+});
+const mapInvitation = (row: any): OrganizationInvitation => ({
+  id: row.id,
+  organizationId: row.organization_id,
+  email: row.email,
+  role: row.role,
+  status: row.status,
+  invitedBy: row.invited_by,
+  acceptedBy: row.accepted_by || undefined,
+  expiresAt: row.expires_at,
+  acceptedAt: row.accepted_at || undefined,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+const mapSupportRequest = (row: any): SupportRequest => ({
+  id: row.id,
+  organizationId: row.organization_id,
+  projectId: row.project_id || undefined,
+  actorUserId: row.actor_user_id,
+  requestType: row.request_type,
+  priority: row.priority,
+  subject: row.subject,
+  message: row.message,
+  status: row.status,
+  metadata: row.metadata || {},
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
 });
 const mapProject = (row: any): Project => ({
   id: row.id,

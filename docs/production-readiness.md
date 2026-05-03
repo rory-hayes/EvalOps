@@ -15,6 +15,7 @@
 11. Dashboard, grader, prompt, routing, report, settings, and audit views read backend state.
 12. Milestone 3 adds public liveness, token-protected readiness, structured server logs, CI, and a live vendor smoke script.
 13. Milestone 4 adds raw-data retention controls, full project JSON export, receipt-backed project deletion, storage cleanup, data inventory, and direct-client RLS tightening.
+14. Milestone 6 adds Stripe billing readiness, organization invites and roles, usage limits, public legal surfaces, and support request records.
 
 ## Supabase
 
@@ -79,6 +80,10 @@ vercel env add OPENAI_API_KEY production
 vercel env add OPENAI_AUDIT_MODEL production
 vercel env add INNGEST_EVENT_KEY production
 vercel env add INNGEST_SIGNING_KEY production
+vercel env add STRIPE_SECRET_KEY production
+vercel env add STRIPE_WEBHOOK_SECRET production
+vercel env add STRIPE_STARTER_PRICE_ID production
+vercel env add STRIPE_GROWTH_PRICE_ID production
 vercel env add EVALOPS_SMOKE_TOKEN production
 vercel deploy --prod
 ```
@@ -88,7 +93,7 @@ Set the same required app envs for Preview and Production. `EVALOPS_TEST_MODE` s
 ## Milestone 3 Operational Endpoints
 
 - `GET /api/health`: public liveness endpoint. It returns service/runtime metadata and no vendor details.
-- `GET /api/readiness`: token-protected readiness endpoint. Call with `Authorization: Bearer $EVALOPS_SMOKE_TOKEN`; it checks production env presence, Supabase service-role Postgres access, and the `evalops-trace-uploads` / `evalops-exports` private buckets.
+- `GET /api/readiness`: token-protected readiness endpoint. Call with `Authorization: Bearer $EVALOPS_SMOKE_TOKEN`; it checks production env presence including Stripe, Supabase service-role Postgres access, and the `evalops-trace-uploads` / `evalops-exports` private buckets.
 - Inngest endpoint: `https://<deployment>/api/inngest`; expected function: `process-trace-import`.
 
 ## Milestone 4 Privacy and Data Operations
@@ -128,6 +133,7 @@ EVALOPS_BASE_URL=https://<deployment-url> npm run smoke:production
 The smoke creates non-sensitive, uniquely named smoke data and verifies:
 
 - token-protected readiness passes;
+- the smoke organization has active or trialing billing before paid actions run;
 - Supabase Auth signs in both smoke users;
 - app API creates a project and uploads a trace;
 - Inngest completes the processing job;
@@ -151,14 +157,14 @@ The smoke creates non-sensitive, uniquely named smoke data and verifies:
 - Inngest is the production async path; explicit test mode processes the queued job inline for deterministic CI and local E2E.
 - Test mode exists only behind `EVALOPS_TEST_MODE=1`; production mode requires real Supabase Auth, Supabase server credentials, OpenAI credentials, and Inngest credentials.
 - Remote production smoke testing should be repeated after Vercel env vars are confirmed and Inngest/OpenAI are live.
-- Third-party trace source integrations, enterprise SSO/SAML, billing, and a production-grade eval execution engine remain out of Milestone 4 scope.
+- Third-party trace source integrations, enterprise SSO/SAML, per-seat metered billing, and a production-grade eval execution engine remain out of current scope.
 - Full export and project deletion are available through audited API paths, but customer-facing copy and operator runbooks should still be reviewed before broad rollout.
 - Raw retention enforcement depends on scheduled/operator invocation until a recurring purge job is configured and monitored.
 
 ## Production Cutover Checklist
 
 1. Confirm Supabase migrations and advisors: `supabase migration list --linked`, `supabase db lint --linked --fail-on error`, and `supabase db advisors --linked`.
-2. Confirm Vercel Preview and Production envs include Supabase, OpenAI, Inngest, and `EVALOPS_SMOKE_TOKEN`; confirm hosted environments do not use `EVALOPS_TEST_MODE=1`.
+2. Confirm Vercel Preview and Production envs include Supabase, OpenAI, Inngest, Stripe, and `EVALOPS_SMOKE_TOKEN`; confirm hosted environments do not use `EVALOPS_TEST_MODE=1`.
 3. Deploy latest commit to preview and confirm `/api/health`, `/api/readiness`, and `/api/inngest`.
 4. Run `EVALOPS_BASE_URL=<preview-url> npm run smoke:production`.
 5. Deploy or promote to production.

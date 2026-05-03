@@ -60,3 +60,29 @@ export const createExportRequestSchema = z.object({
 export const deleteProjectRequestSchema = z.object({
   confirmationName: z.string().trim().min(1).max(120),
 });
+
+export const billingCheckoutRequestSchema = z.object({
+  planId: z.enum(["starter", "growth"]),
+  returnUrl: z.string().url().max(2000),
+});
+
+export const organizationSelectRequestSchema = z.object({
+  organizationId: z.string().trim().min(1).max(120),
+});
+
+export const createOrganizationInvitationRequestSchema = z.object({
+  email: z.string().trim().email().max(320).transform((value) => value.toLowerCase()),
+  role: z.enum(["admin", "member", "reviewer"]),
+});
+
+export const updateOrganizationMemberRequestSchema = z.object({
+  role: z.enum(["owner", "admin", "member", "reviewer"]),
+});
+
+export const createSupportRequestSchema = z.object({
+  projectId: z.string().trim().min(1).max(120).optional(),
+  requestType: z.enum(["support", "incident", "billing", "data_request"]).default("support"),
+  priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
+  subject: z.string().trim().min(3).max(160),
+  message: z.string().trim().min(10).max(4000),
+});

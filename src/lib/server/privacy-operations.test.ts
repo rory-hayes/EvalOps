@@ -81,6 +81,40 @@ function buildWorkspaceState(): WorkspaceState {
       role: "owner",
       createdAt: "2026-05-03T12:00:00.000Z",
     },
+    billing: {
+      billing: {
+        organizationId: "org_1",
+        planId: "starter",
+        status: "active",
+        cancelAtPeriodEnd: false,
+        metadata: {},
+        createdAt: "2026-05-03T12:00:00.000Z",
+        updatedAt: "2026-05-03T12:00:00.000Z",
+      },
+      usage: {
+        projects: 1,
+        uploads: 1,
+        exports: 1,
+        openai_generations: 1,
+        seats: 1,
+      },
+      period: {
+        periodStart: "2026-05-01T00:00:00.000Z",
+        periodEnd: "2026-06-01T00:00:00.000Z",
+      },
+      canUseFeatures: true,
+    },
+    members: [
+      {
+        id: "mem_1",
+        organizationId: "org_1",
+        userId: "user_1",
+        role: "owner",
+        createdAt: "2026-05-03T12:00:00.000Z",
+      },
+    ],
+    invitations: [],
+    supportRequests: [],
     projects: [
       {
         id: "proj_1",

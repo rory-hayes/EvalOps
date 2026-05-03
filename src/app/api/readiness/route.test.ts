@@ -28,6 +28,10 @@ describe("readiness route", () => {
     vi.stubEnv("OPENAI_AUDIT_MODEL", "gpt-test");
     vi.stubEnv("INNGEST_EVENT_KEY", "event-key");
     vi.stubEnv("INNGEST_SIGNING_KEY", "signing-key");
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_stripe");
+    vi.stubEnv("STRIPE_WEBHOOK_SECRET", "whsec_test");
+    vi.stubEnv("STRIPE_STARTER_PRICE_ID", "price_starter");
+    vi.stubEnv("STRIPE_GROWTH_PRICE_ID", "price_growth");
     vi.doMock("@/lib/server/supabase-admin", () => ({
       createSupabaseAdminClient: () => ({
         from: () => ({

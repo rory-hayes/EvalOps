@@ -48,7 +48,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     pathname === "/" ||
     pathname.startsWith("/onboarding") ||
     pathname.startsWith("/login") ||
-    pathname.startsWith("/auth/");
+    pathname.startsWith("/auth/") ||
+    pathname.startsWith("/terms") ||
+    pathname.startsWith("/privacy") ||
+    pathname.startsWith("/dpa") ||
+    pathname.startsWith("/subprocessors") ||
+    pathname.startsWith("/contact") ||
+    pathname.startsWith("/invite");
 
   const applyHeaderProject = useCallback((project?: HeaderProject | null) => {
     const projectName = project?.name || "Create a project";

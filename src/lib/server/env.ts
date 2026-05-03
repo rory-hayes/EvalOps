@@ -99,11 +99,22 @@ export function checkProductionEnvironment(options: { includeSmokeToken?: boolea
     checks.push(envPresenceCheck("EVALOPS_SMOKE_TOKEN"));
   }
 
+  checks.push(...checkStripeEnvironment());
+
   return {
     ok: checks.every((check) => check.status === "ok"),
     checks,
     runtime: getRuntimeInfo(),
   };
+}
+
+export function checkStripeEnvironment() {
+  return [
+    envPresenceCheck("STRIPE_SECRET_KEY"),
+    envPresenceCheck("STRIPE_WEBHOOK_SECRET"),
+    envPresenceCheck("STRIPE_STARTER_PRICE_ID"),
+    envPresenceCheck("STRIPE_GROWTH_PRICE_ID"),
+  ];
 }
 
 export function assertProductionEnvironmentConfigured() {

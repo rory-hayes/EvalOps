@@ -12,6 +12,8 @@ import type {
   WorkflowType,
 } from "../domain/audit";
 import type { IssueStatus, NormalizedTrace, ReviewIssue } from "../domain/trace-processing";
+import type { BillingPlanId, BillingStatus, UsageMetric } from "./commercial/plans";
+import type { MonthlyPeriod, UsageSummary } from "./commercial/usage";
 
 export type ActorContext = {
   userId: string;
@@ -39,6 +41,71 @@ export type OrganizationMembership = {
   userId: string;
   role: "owner" | "admin" | "member" | "reviewer";
   createdAt: string;
+};
+
+export type OrganizationBilling = {
+  organizationId: string;
+  planId: BillingPlanId;
+  status: BillingStatus;
+  stripeCustomerId?: string;
+  stripeSubscriptionId?: string;
+  stripePriceId?: string;
+  stripeCurrentPeriodStart?: string;
+  stripeCurrentPeriodEnd?: string;
+  trialEndsAt?: string;
+  cancelAtPeriodEnd: boolean;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type StoredUsageEvent = {
+  id: string;
+  organizationId: string;
+  projectId?: string;
+  metric: UsageMetric;
+  quantity: number;
+  source: string;
+  sourceId?: string;
+  periodStart: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type OrganizationInvitation = {
+  id: string;
+  organizationId: string;
+  email: string;
+  role: Exclude<OrganizationMembership["role"], "owner">;
+  status: "pending" | "accepted" | "revoked" | "expired";
+  invitedBy: string;
+  acceptedBy?: string;
+  expiresAt: string;
+  acceptedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SupportRequest = {
+  id: string;
+  organizationId: string;
+  projectId?: string;
+  actorUserId: string;
+  requestType: "support" | "incident" | "billing" | "data_request";
+  priority: "low" | "normal" | "high" | "urgent";
+  subject: string;
+  message: string;
+  status: "open" | "triaged" | "closed";
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type BillingOverview = {
+  billing: OrganizationBilling;
+  usage: UsageSummary;
+  period: MonthlyPeriod;
+  canUseFeatures: boolean;
 };
 
 export type Project = {
@@ -360,6 +427,10 @@ export type WorkspaceState = {
   organization: Organization;
   user: UserProfile;
   membership: OrganizationMembership;
+  billing: BillingOverview;
+  members: OrganizationMembership[];
+  invitations: OrganizationInvitation[];
+  supportRequests: SupportRequest[];
   projects: Project[];
   activeProject?: Project;
   traceImports: TraceImport[];
@@ -392,6 +463,61 @@ export type CreateProjectInput = {
   objective: string;
   riskPreferences: string[];
   privacyMode: Project["privacyMode"];
+};
+
+export type CreateOrganizationInvitationInput = {
+  email: string;
+  role: OrganizationInvitation["role"];
+};
+
+export type UpdateOrganizationMemberInput = {
+  membershipId: string;
+  role: OrganizationMembership["role"];
+};
+
+export type CreateSupportRequestInput = {
+  projectId?: string;
+  requestType: SupportRequest["requestType"];
+  priority?: SupportRequest["priority"];
+  subject: string;
+  message: string;
+};
+
+export type StartBillingCheckoutInput = {
+  planId: BillingPlanId;
+  returnUrl: string;
+};
+
+export type BillingSession = {
+  url: string;
+};
+
+export type UpdateOrganizationBillingInput = Partial<
+  Pick<
+    OrganizationBilling,
+    | "planId"
+    | "status"
+    | "stripeCustomerId"
+    | "stripeSubscriptionId"
+    | "stripePriceId"
+    | "stripeCurrentPeriodStart"
+    | "stripeCurrentPeriodEnd"
+    | "trialEndsAt"
+    | "cancelAtPeriodEnd"
+    | "metadata"
+  >
+> & {
+  organizationId?: string;
+};
+
+export type RecordUsageInput = {
+  organizationId?: string;
+  projectId?: string;
+  metric: UsageMetric;
+  quantity?: number;
+  source: string;
+  sourceId?: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type UpdateProjectSettingsInput = {
@@ -468,6 +594,21 @@ export type EvalOpsStore = {
   ensureWorkspace(actor: ActorContext): Promise<WorkspaceState>;
   getWorkspaceState(actor: ActorContext, projectId?: string): Promise<WorkspaceState>;
   getProjectState(actor: ActorContext, projectId: string): Promise<WorkspaceState>;
+  listOrganizations(actor: ActorContext): Promise<Array<{ organization: Organization; membership: OrganizationMembership }>>;
+  getBillingOverview(actor: ActorContext): Promise<BillingOverview>;
+  updateOrganizationBilling(actor: ActorContext, input: UpdateOrganizationBillingInput): Promise<OrganizationBilling>;
+  recordUsage(actor: ActorContext, input: RecordUsageInput): Promise<StoredUsageEvent>;
+  hasProcessedStripeEvent(eventId: string): Promise<boolean>;
+  recordStripeEvent(input: { id: string; type: string; livemode: boolean; payload: Record<string, unknown> }): Promise<void>;
+  findOrganizationBillingByStripeCustomer(stripeCustomerId: string): Promise<OrganizationBilling | undefined>;
+  createOrganizationInvitation(actor: ActorContext, input: CreateOrganizationInvitationInput): Promise<{
+    invitation: OrganizationInvitation;
+    token: string;
+  }>;
+  acceptOrganizationInvitation(actor: ActorContext, token: string): Promise<OrganizationMembership>;
+  updateOrganizationMember(actor: ActorContext, input: UpdateOrganizationMemberInput): Promise<OrganizationMembership>;
+  removeOrganizationMember(actor: ActorContext, membershipId: string): Promise<void>;
+  createSupportRequest(actor: ActorContext, input: CreateSupportRequestInput): Promise<SupportRequest>;
   createProject(actor: ActorContext, input: CreateProjectInput): Promise<Project>;
   updateProjectSettings(actor: ActorContext, projectId: string, input: UpdateProjectSettingsInput): Promise<Project>;
   createTraceImport(actor: ActorContext, input: CreateTraceImportInput): Promise<{

@@ -45,6 +45,16 @@ async function main() {
   );
   const ownerCookie = sessionCookie(owner.session);
 
+  step("Checking commercial billing readiness for smoke organization");
+  const billingResponse = await appFetch(baseUrl, "/api/billing", {
+    cookie: ownerCookie,
+  });
+  assert(billingResponse.response.ok, `Billing readiness failed: ${JSON.stringify(billingResponse.body)}`);
+  assert(
+    billingResponse.body.data?.canUseFeatures === true,
+    "Smoke organization must have an active or trialing billing state before paid actions can run.",
+  );
+
   step("Creating a smoke project through the deployed app API");
   const projectResponse = await appFetch(baseUrl, "/api/projects", {
     method: "POST",
@@ -60,6 +70,20 @@ async function main() {
   assert(projectResponse.response.ok, `Project creation failed: ${JSON.stringify(projectResponse.body)}`);
   const project = projectResponse.body.data;
   assert(project?.id, "Project creation response did not include a project id.");
+
+  step("Creating a support escalation record");
+  const supportResponse = await appFetch(baseUrl, "/api/support/requests", {
+    method: "POST",
+    cookie: ownerCookie,
+    json: {
+      projectId: project.id,
+      requestType: "support",
+      priority: "normal",
+      subject: `Production smoke ${runId}`,
+      message: "Smoke verification record for commercial support readiness.",
+    },
+  });
+  assert(supportResponse.response.ok, `Support request failed: ${JSON.stringify(supportResponse.body)}`);
 
   step("Uploading a trace file and enqueueing live processing");
   const uploadResponse = await uploadTrace(baseUrl, ownerCookie, project.id, "production-smoke.csv");

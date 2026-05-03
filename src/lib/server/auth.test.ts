@@ -64,7 +64,7 @@ describe("server auth", () => {
     await expect(getActorFromRequest(new NextRequest("http://localhost/api/app-state"))).resolves.toEqual({
       userId: "57f29644-a54b-4e4b-8d1d-3a4b36c89119",
       email: "founder@example.com",
-      organizationId: "org_57f29644-a54b-4e4b-8d1d-3a4b36c89119",
+      organizationId: undefined,
     });
   });
 });

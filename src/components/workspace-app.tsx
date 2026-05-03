@@ -3,16 +3,20 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  CreditCard,
   Download,
   FileJson,
   History,
+  LifeBuoy,
   Loader2,
   LogOut,
   Play,
   Plus,
   RefreshCw,
+  Send,
   Trash2,
   UploadCloud,
+  Users,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Card, PageHeader, ProgressBar, type Tone } from "@/components/primitives";
@@ -1503,6 +1507,7 @@ function SettingsView({
           <ReadOnlySetting label="Trace storage target" value="Supabase Storage" />
         </div>
       </Card>
+      <CommercialReadinessCards state={state} busy={busy} mutate={mutate} />
       <SettingsPrivacyCard
         key={`${project?.id || "no-project"}-${project?.updatedAt || ""}`}
         project={project}
@@ -1647,6 +1652,252 @@ function SettingsPrivacyCard({
         </div>
       </Card>
     </>
+  );
+}
+
+function CommercialReadinessCards({
+  state,
+  busy,
+  mutate,
+}: {
+  state: WorkspaceState;
+  busy: string | null;
+  mutate: MutateFn;
+}) {
+  return (
+    <div className="mt-4 grid gap-4 xl:grid-cols-[1fr_1fr]">
+      <BillingSettingsCard state={state} busy={busy} mutate={mutate} />
+      <TeamSettingsCard state={state} busy={busy} mutate={mutate} />
+      <UsageSettingsCard state={state} />
+      <SupportSettingsCard state={state} busy={busy} mutate={mutate} />
+    </div>
+  );
+}
+
+function BillingSettingsCard({ state, busy, mutate }: { state: WorkspaceState; busy: string | null; mutate: MutateFn }) {
+  const billing = state.billing.billing;
+  const canManage = state.membership.role === "owner";
+  const returnUrl = typeof window === "undefined" ? "" : `${window.location.origin}/settings`;
+  return (
+    <Card className="p-5">
+      <div className="flex items-start gap-3">
+        <span className="rounded-[8px] bg-blue-50 p-2 text-blue-700"><CreditCard className="h-5 w-5" /></span>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lg font-semibold text-slate-950">Billing</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            Self-serve Stripe billing controls for the active organization.
+          </p>
+        </div>
+        <Badge tone={billing.status === "active" || billing.status === "trialing" ? "green" : "amber"}>{billing.status}</Badge>
+      </div>
+      <div className="mt-5 grid gap-3 md:grid-cols-3">
+        <ReadOnlySetting label="Plan" value={billing.planId} />
+        <ReadOnlySetting label="Customer" value={billing.stripeCustomerId ? "Connected" : "Not connected"} />
+        <ReadOnlySetting label="Trial ends" value={formatOptionalDate(billing.trialEndsAt)} />
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button
+          disabled={!canManage || busy === "checkout-starter"}
+          onClick={() =>
+            mutate("checkout-starter", async () => {
+              const session = await api<{ url: string }>("/api/billing/checkout", {
+                method: "POST",
+                body: JSON.stringify({ planId: "starter", returnUrl }),
+              });
+              window.location.href = session.url;
+            })
+          }
+        >
+          Start Starter
+        </Button>
+        <Button
+          variant="secondary"
+          disabled={!canManage || busy === "checkout-growth"}
+          onClick={() =>
+            mutate("checkout-growth", async () => {
+              const session = await api<{ url: string }>("/api/billing/checkout", {
+                method: "POST",
+                body: JSON.stringify({ planId: "growth", returnUrl }),
+              });
+              window.location.href = session.url;
+            })
+          }
+        >
+          Start Growth
+        </Button>
+        <Button
+          variant="secondary"
+          disabled={!canManage || !billing.stripeCustomerId || busy === "billing-portal"}
+          onClick={() =>
+            mutate("billing-portal", async () => {
+              const session = await api<{ url: string }>("/api/billing/portal", {
+                method: "POST",
+                body: JSON.stringify({ returnUrl }),
+              });
+              window.location.href = session.url;
+            })
+          }
+        >
+          Open portal
+        </Button>
+      </div>
+      {!canManage ? <p className="mt-3 text-xs text-slate-500">Only owners can manage billing.</p> : null}
+    </Card>
+  );
+}
+
+function TeamSettingsCard({ state, busy, mutate }: { state: WorkspaceState; busy: string | null; mutate: MutateFn }) {
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<"admin" | "member" | "reviewer">("member");
+  const canInvite = state.membership.role === "owner" || state.membership.role === "admin";
+  return (
+    <Card className="p-5">
+      <div className="flex items-start gap-3">
+        <span className="rounded-[8px] bg-blue-50 p-2 text-blue-700"><Users className="h-5 w-5" /></span>
+        <div>
+          <h2 className="text-lg font-semibold text-slate-950">Team</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">Invite members and keep roles explicit.</p>
+        </div>
+      </div>
+      <div className="mt-4 space-y-2">
+        {state.members.map((member) => (
+          <div key={member.id} className="flex items-center justify-between gap-3 rounded-[8px] border border-slate-200 p-3 text-sm">
+            <span className="font-medium text-slate-800">{member.userId === state.user.id ? state.user.email : member.userId}</span>
+            <Badge tone={member.role === "owner" ? "blue" : "slate"}>{member.role}</Badge>
+          </div>
+        ))}
+        {state.invitations.filter((invite) => invite.status === "pending").map((invite) => (
+          <div key={invite.id} className="flex items-center justify-between gap-3 rounded-[8px] border border-amber-200 bg-amber-50 p-3 text-sm">
+            <span className="font-medium text-amber-900">{invite.email}</span>
+            <Badge tone="amber">{invite.role} pending</Badge>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 grid gap-2 md:grid-cols-[1fr_140px]">
+        <input
+          aria-label="Invite email"
+          className="h-11 rounded-[7px] border border-slate-200 px-3 text-sm"
+          placeholder="teammate@example.com"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+        />
+        <select
+          aria-label="Invite role"
+          className="h-11 rounded-[7px] border border-slate-200 px-3 text-sm"
+          value={role}
+          onChange={(event) => setRole(event.target.value as typeof role)}
+        >
+          <option value="admin">admin</option>
+          <option value="member">member</option>
+          <option value="reviewer">reviewer</option>
+        </select>
+      </div>
+      <Button
+        className="mt-3"
+        variant="secondary"
+        disabled={!canInvite || !email.trim() || busy === "invite-member"}
+        onClick={() =>
+          mutate("invite-member", () =>
+            api("/api/organizations/invitations", {
+              method: "POST",
+              body: JSON.stringify({ email, role }),
+            }),
+          ).then(() => setEmail(""))
+        }
+      >
+        <Send className="h-4 w-4" />
+        Send invite
+      </Button>
+    </Card>
+  );
+}
+
+function UsageSettingsCard({ state }: { state: WorkspaceState }) {
+  const usage = state.billing.usage;
+  const limits = commercialLimits[state.billing.billing.planId];
+  return (
+    <Card className="p-5">
+      <h2 className="text-lg font-semibold text-slate-950">Usage</h2>
+      <p className="mt-2 text-sm leading-6 text-slate-600">
+        Current monthly usage for plan enforcement.
+      </p>
+      <div className="mt-5 space-y-4">
+        {(["projects", "uploads", "exports", "openai_generations", "seats"] as const).map((metric) => (
+          <div key={metric}>
+            <div className="mb-2 flex justify-between text-sm">
+              <span className="font-medium capitalize text-slate-700">{metric.replace(/_/g, " ")}</span>
+              <strong>{usage[metric]} / {limits[metric]}</strong>
+            </div>
+            <ProgressBar value={Math.min((usage[metric] / limits[metric]) * 100, 100)} tone={usage[metric] >= limits[metric] ? "amber" : "blue"} />
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function SupportSettingsCard({ state, busy, mutate }: { state: WorkspaceState; busy: string | null; mutate: MutateFn }) {
+  const [subject, setSubject] = useState("Commercial launch support");
+  const [message, setMessage] = useState("We need help with billing, invite, or incident escalation readiness.");
+  const [requestType, setRequestType] = useState<"support" | "incident" | "billing" | "data_request">("support");
+  return (
+    <Card className="p-5">
+      <div className="flex items-start gap-3">
+        <span className="rounded-[8px] bg-blue-50 p-2 text-blue-700"><LifeBuoy className="h-5 w-5" /></span>
+        <div>
+          <h2 className="text-lg font-semibold text-slate-950">Support and escalation</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">Create an internal support record without exposing secrets or sensitive customer content.</p>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3">
+        <select
+          aria-label="Support request type"
+          className="h-11 rounded-[7px] border border-slate-200 px-3 text-sm"
+          value={requestType}
+          onChange={(event) => setRequestType(event.target.value as typeof requestType)}
+        >
+          <option value="support">support</option>
+          <option value="incident">incident</option>
+          <option value="billing">billing</option>
+          <option value="data_request">data request</option>
+        </select>
+        <input
+          aria-label="Support subject"
+          className="h-11 rounded-[7px] border border-slate-200 px-3 text-sm"
+          value={subject}
+          onChange={(event) => setSubject(event.target.value)}
+        />
+        <textarea
+          aria-label="Support message"
+          className="min-h-24 rounded-[7px] border border-slate-200 p-3 text-sm leading-6"
+          value={message}
+          onChange={(event) => setMessage(event.target.value)}
+        />
+      </div>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Button
+          variant="secondary"
+          disabled={busy === "support-request" || subject.trim().length < 3 || message.trim().length < 10}
+          onClick={() =>
+            mutate("support-request", () =>
+              api("/api/support/requests", {
+                method: "POST",
+                body: JSON.stringify({
+                  projectId: state.activeProject?.id,
+                  requestType,
+                  priority: requestType === "incident" ? "urgent" : "normal",
+                  subject,
+                  message,
+                }),
+              }),
+            )
+          }
+        >
+          Submit request
+        </Button>
+        <Badge tone="slate">{state.supportRequests.length} request{state.supportRequests.length === 1 ? "" : "s"}</Badge>
+      </div>
+    </Card>
   );
 }
 
@@ -2220,6 +2471,23 @@ function statusTone(status: string): Tone {
   if (status === "running") return "blue";
   return "slate";
 }
+
+const commercialLimits = {
+  starter: {
+    seats: 3,
+    projects: 3,
+    uploads: 25,
+    exports: 20,
+    openai_generations: 100,
+  },
+  growth: {
+    seats: 10,
+    projects: 15,
+    uploads: 250,
+    exports: 100,
+    openai_generations: 1000,
+  },
+} as const;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const isFormDataBody =
