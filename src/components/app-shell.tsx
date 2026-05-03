@@ -31,10 +31,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [label, setLabel] = useState("No project selected");
   const [initials, setInitials] = useState("EO");
   const [userLabel, setUserLabel] = useState("EU");
-  const authRoute = pathname.startsWith("/login") || pathname.startsWith("/auth/");
+  const publicRoute =
+    pathname === "/" ||
+    pathname.startsWith("/onboarding") ||
+    pathname.startsWith("/login") ||
+    pathname.startsWith("/auth/");
 
   useEffect(() => {
-    if (authRoute) return;
+    if (publicRoute) return;
     let alive = true;
     fetch("/api/app-state", { cache: "no-store" })
       .then((response) => response.json())
@@ -50,9 +54,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       alive = false;
     };
-  }, [pathname, authRoute]);
+  }, [pathname, publicRoute]);
 
-  if (authRoute) {
+  if (publicRoute) {
     return <>{children}</>;
   }
 
@@ -95,7 +99,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="lg:pl-[232px]">
         <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
           <div className="flex min-h-20 items-center gap-3 px-4 lg:px-6">
-            <Link href="/" className="flex shrink-0 items-center gap-2 lg:hidden">
+            <Link href="/dashboard" className="flex shrink-0 items-center gap-2 lg:hidden">
               <div className="relative h-7 w-7">
                 <span className="absolute left-1 top-0 h-4 w-4 rounded-full bg-blue-500" />
                 <span className="absolute bottom-0 left-0 h-4 w-4 rounded-full bg-sky-400 mix-blend-multiply" />

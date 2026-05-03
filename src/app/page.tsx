@@ -1,5 +1,5 @@
-import { WorkspaceApp } from "@/components/workspace-app";
+import { LandingPage } from "@/components/landing-page";
 
-export default function DashboardPage() {
-  return <WorkspaceApp view="dashboard" />;
+export default function HomePage() {
+  return <LandingPage />;
 }

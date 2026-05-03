@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 
 export const navItems = [
-  { label: "Dashboard", href: "/", icon: BarChart3 },
+  { label: "Dashboard", href: "/dashboard", icon: BarChart3 },
   { label: "Projects", href: "/projects", icon: FileText },
   { label: "Trace Import", href: "/trace-import", icon: UploadCloud },
   { label: "Eval Builder", href: "/eval-builder", icon: Sparkles },
