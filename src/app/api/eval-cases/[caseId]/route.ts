@@ -1,6 +1,6 @@
 import { type NextRequest } from "next/server";
 import { getActorFromRequest } from "@/lib/server/auth";
-import { handleApi } from "@/lib/server/api";
+import { handleApi, readJsonBody } from "@/lib/server/api";
 import { updateEvalCaseRequestSchema } from "@/lib/server/schemas";
 import { getEvalOpsStore } from "@/lib/server/store";
 
@@ -11,7 +11,7 @@ export async function PATCH(
   return handleApi(async () => {
     const actor = await getActorFromRequest(request);
     const { caseId } = await params;
-    const input = updateEvalCaseRequestSchema.parse(await request.json());
+    const input = updateEvalCaseRequestSchema.parse(await readJsonBody(request));
     const store = await getEvalOpsStore();
     return store.updateEvalCase(actor, { caseId, ...input });
   });

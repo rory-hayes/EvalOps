@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Card, PageHeader, ProgressBar } from "@/components/primitives";
+import { SELECTED_PROJECT_STORAGE_KEY } from "@/lib/project-selection";
 import type { WorkspaceState } from "@/lib/server/types";
 
 type View =
@@ -29,6 +30,12 @@ type ApiEnvelope<T> =
   | { ok: true; data: T; correlationId: string }
   | { ok: false; error: { code: string; message: string; correlationId: string } };
 
+type MutateFn = <T>(
+  label: string,
+  action: () => Promise<T>,
+  projectId?: string | ((result: T) => string | undefined),
+) => Promise<void>;
+
 export function WorkspaceApp({ view }: { view: View }) {
   const [state, setState] = useState<WorkspaceState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -39,11 +46,15 @@ export function WorkspaceApp({ view }: { view: View }) {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/app-state${projectId ? `?projectId=${projectId}` : ""}`, {
+      const selectedProjectId = projectId || getStoredProjectId();
+      const response = await fetch(`/api/app-state${selectedProjectId ? `?projectId=${selectedProjectId}` : ""}`, {
         cache: "no-store",
       });
       const payload = (await response.json()) as ApiEnvelope<WorkspaceState>;
       if (!payload.ok) throw new Error(payload.error.message);
+      if (payload.data.activeProject?.id) {
+        rememberProject(payload.data.activeProject.id);
+      }
       setState(payload.data);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load workspace.");
@@ -57,19 +68,40 @@ export function WorkspaceApp({ view }: { view: View }) {
       void refresh();
     }, 0);
     const listener = () => refresh();
+    const projectSelectedListener = (event: Event) => {
+      if (event instanceof CustomEvent && event.detail?.source === "workspace") return;
+      const projectId = event instanceof CustomEvent ? String(event.detail?.projectId || "") : "";
+      void refresh(projectId);
+    };
     window.addEventListener("evalops:refresh", listener);
+    window.addEventListener("evalops:project-selected", projectSelectedListener);
     return () => {
       window.clearTimeout(timeout);
       window.removeEventListener("evalops:refresh", listener);
+      window.removeEventListener("evalops:project-selected", projectSelectedListener);
     };
   }, []);
 
-  async function mutate<T>(label: string, action: () => Promise<T>, projectId?: string) {
+  async function mutate<T>(
+    label: string,
+    action: () => Promise<T>,
+    projectId?: string | ((result: T) => string | undefined),
+  ) {
     setBusy(label);
     setError(null);
     try {
-      await action();
-      await refresh(projectId || state?.activeProject?.id);
+      const result = await action();
+      const nextProjectId =
+        typeof projectId === "function" ? projectId(result) : projectId;
+      if (nextProjectId) {
+        rememberProject(nextProjectId);
+        window.dispatchEvent(
+          new CustomEvent("evalops:project-selected", {
+            detail: { projectId: nextProjectId, source: "workspace" },
+          }),
+        );
+      }
+      await refresh(nextProjectId || state?.activeProject?.id);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Action failed.");
     } finally {
@@ -137,6 +169,16 @@ export function WorkspaceApp({ view }: { view: View }) {
   );
 }
 
+function getStoredProjectId() {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(SELECTED_PROJECT_STORAGE_KEY) || "";
+}
+
+function rememberProject(projectId: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(SELECTED_PROJECT_STORAGE_KEY, projectId);
+}
+
 function DashboardView({
   state,
   busy,
@@ -144,7 +186,7 @@ function DashboardView({
 }: {
   state: WorkspaceState;
   busy: string | null;
-  mutate: <T>(label: string, action: () => Promise<T>, projectId?: string) => Promise<void>;
+  mutate: MutateFn;
 }) {
   const summary = useSummary(state);
   return (
@@ -216,7 +258,7 @@ function ProjectsView({
 }: {
   state: WorkspaceState;
   busy: string | null;
-  mutate: <T>(label: string, action: () => Promise<T>, projectId?: string) => Promise<void>;
+  mutate: MutateFn;
 }) {
   const [form, setForm] = useState({
     name: "Support Assistant Audit",
@@ -249,7 +291,7 @@ function ProjectsView({
                   }),
                 });
                 return created;
-              });
+              }, (created) => created.id);
             }}
           >
             <Field label="Project name" value={form.name} onChange={(name) => setForm({ ...form, name })} />
@@ -292,9 +334,21 @@ function ProjectsView({
                 <div key={project.id} className="p-4">
                   <div className="flex items-center justify-between gap-3">
                     <h3 className="font-semibold text-slate-950">{project.name}</h3>
-                    <Badge tone={project.id === state.activeProject?.id ? "blue" : "slate"}>
-                      {project.id === state.activeProject?.id ? "Selected" : project.status}
-                    </Badge>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Badge tone={project.id === state.activeProject?.id ? "blue" : "slate"}>
+                        {project.id === state.activeProject?.id ? "Selected" : project.status}
+                      </Badge>
+                      {project.id !== state.activeProject?.id ? (
+                        <Button
+                          variant="secondary"
+                          className="h-8 px-3 text-xs"
+                          disabled={busy === `select-${project.id}`}
+                          onClick={() => mutate(`select-${project.id}`, async () => null, project.id)}
+                        >
+                          Open
+                        </Button>
+                      ) : null}
+                    </div>
                   </div>
                   <p className="mt-2 text-sm leading-6 text-slate-600">{project.objective}</p>
                   <p className="mt-3 text-xs text-slate-500">Created {formatDate(project.createdAt)}</p>
@@ -317,7 +371,7 @@ function TraceImportView({
 }: {
   state: WorkspaceState;
   busy: string | null;
-  mutate: <T>(label: string, action: () => Promise<T>, projectId?: string) => Promise<void>;
+  mutate: MutateFn;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -415,7 +469,7 @@ function EvalBuilderView({
 }: {
   state: WorkspaceState;
   busy: string | null;
-  mutate: <T>(label: string, action: () => Promise<T>, projectId?: string) => Promise<void>;
+  mutate: MutateFn;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(state.evalCases[0]?.id || null);
   const selected = state.evalCases.find((item) => item.id === selectedId) || state.evalCases[0];
@@ -540,7 +594,7 @@ function PromptOptimizerView({
 }: {
   state: WorkspaceState;
   busy: string | null;
-  mutate: <T>(label: string, action: () => Promise<T>, projectId?: string) => Promise<void>;
+  mutate: MutateFn;
 }) {
   return (
     <>
@@ -591,7 +645,7 @@ function RoutingCachingView({
 }: {
   state: WorkspaceState;
   busy: string | null;
-  mutate: <T>(label: string, action: () => Promise<T>, projectId?: string) => Promise<void>;
+  mutate: MutateFn;
 }) {
   return (
     <>
@@ -635,7 +689,7 @@ function ReportsView({
 }: {
   state: WorkspaceState;
   busy: string | null;
-  mutate: <T>(label: string, action: () => Promise<T>, projectId?: string) => Promise<void>;
+  mutate: MutateFn;
 }) {
   const report = state.reports[0];
   return (
@@ -765,7 +819,7 @@ function ExportButton({
 }: {
   state: WorkspaceState;
   busy: string | null;
-  mutate: <T>(label: string, action: () => Promise<T>, projectId?: string) => Promise<void>;
+  mutate: MutateFn;
 }) {
   return state.activeProject ? (
     <Button

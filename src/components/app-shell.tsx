@@ -7,9 +7,20 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { navItems } from "@/lib/navigation";
+import { SELECTED_PROJECT_STORAGE_KEY } from "@/lib/project-selection";
 import { cn } from "@/lib/utils";
+
+type HeaderProject = {
+  id: string;
+  name: string;
+};
+
+function storedProjectId() {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(SELECTED_PROJECT_STORAGE_KEY) || "";
+}
 
 function Logo() {
   return (
@@ -29,6 +40,8 @@ function Logo() {
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [label, setLabel] = useState("No project selected");
+  const [projects, setProjects] = useState<HeaderProject[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState("");
   const [initials, setInitials] = useState("EO");
   const [userLabel, setUserLabel] = useState("EU");
   const publicRoute =
@@ -37,24 +50,64 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     pathname.startsWith("/login") ||
     pathname.startsWith("/auth/");
 
-  useEffect(() => {
-    if (publicRoute) return;
+  const applyHeaderProject = useCallback((project?: HeaderProject | null) => {
+    const projectName = project?.name || "Create a project";
+    setLabel(projectName);
+    setActiveProjectId(project?.id || "");
+    setInitials(
+      projectName
+        .split(/\s+/)
+        .map((part: string) => part[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase(),
+    );
+  }, []);
+
+  const loadHeaderState = useCallback((projectId?: string) => {
     let alive = true;
-    fetch("/api/app-state", { cache: "no-store" })
+    const selectedProjectId = projectId || storedProjectId();
+    const path = selectedProjectId
+      ? `/api/app-state?projectId=${encodeURIComponent(selectedProjectId)}`
+      : "/api/app-state";
+    fetch(path, { cache: "no-store" })
       .then((response) => response.json())
       .then((payload) => {
         if (!alive || !payload.ok) return;
-        const projectName = payload.data.activeProject?.name || "Create a project";
+        const projectList = (payload.data.projects || []) as HeaderProject[];
+        setProjects(projectList);
+        applyHeaderProject(payload.data.activeProject);
+        if (payload.data.activeProject?.id) {
+          window.localStorage.setItem(
+            SELECTED_PROJECT_STORAGE_KEY,
+            payload.data.activeProject.id,
+          );
+        }
         const displayName = payload.data.user?.displayName || payload.data.user?.email || "EvalOps User";
-        setLabel(projectName);
-        setInitials(projectName.split(/\s+/).map((part: string) => part[0]).join("").slice(0, 2).toUpperCase());
         setUserLabel(displayName.split(/\s+/).map((part: string) => part[0]).join("").slice(0, 2).toUpperCase());
       })
       .catch(() => undefined);
     return () => {
       alive = false;
     };
-  }, [pathname, publicRoute]);
+  }, [applyHeaderProject]);
+
+  useEffect(() => {
+    if (publicRoute) return;
+    const cleanup = loadHeaderState();
+    const refreshListener = () => loadHeaderState();
+    const projectSelectedListener = (event: Event) => {
+      const projectId = event instanceof CustomEvent ? String(event.detail?.projectId || "") : "";
+      loadHeaderState(projectId);
+    };
+    window.addEventListener("evalops:refresh", refreshListener);
+    window.addEventListener("evalops:project-selected", projectSelectedListener);
+    return () => {
+      cleanup?.();
+      window.removeEventListener("evalops:refresh", refreshListener);
+      window.removeEventListener("evalops:project-selected", projectSelectedListener);
+    };
+  }, [loadHeaderState, pathname, publicRoute]);
 
   if (publicRoute) {
     return <>{children}</>;
@@ -62,6 +115,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   function refreshWorkspace() {
     window.dispatchEvent(new CustomEvent("evalops:refresh"));
+  }
+
+  function selectProject(projectId: string) {
+    const project = projects.find((item) => item.id === projectId);
+    window.localStorage.setItem(SELECTED_PROJECT_STORAGE_KEY, projectId);
+    applyHeaderProject(project);
+    window.dispatchEvent(
+      new CustomEvent("evalops:project-selected", { detail: { projectId, source: "app-shell" } }),
+    );
   }
 
   return (
@@ -106,18 +168,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <span className="absolute bottom-1 right-0 h-4 w-4 rounded-full bg-indigo-500 mix-blend-multiply" />
               </div>
             </Link>
-            <Link
-              href="/projects"
-              className="hidden h-11 w-72 items-center justify-between rounded-[8px] border border-slate-200 bg-white px-3 shadow-sm md:flex"
-            >
-              <span className="flex items-center gap-3">
+            <div className="relative hidden h-11 w-72 items-center rounded-[8px] border border-slate-200 bg-white px-3 shadow-sm md:flex">
+              <span className="flex min-w-0 flex-1 items-center gap-3">
                 <span className="flex h-7 w-7 items-center justify-center rounded-[7px] bg-violet-100 text-xs font-bold text-blue-700">
                   {initials}
                 </span>
-                <span className="truncate text-sm font-semibold text-slate-900">{label}</span>
+                <select
+                  aria-label="Project switcher"
+                  className="h-9 min-w-0 flex-1 appearance-none bg-transparent pr-7 text-sm font-semibold text-slate-900 outline-none"
+                  value={activeProjectId}
+                  onChange={(event) => selectProject(event.target.value)}
+                  disabled={!projects.length}
+                >
+                  {projects.length ? (
+                    projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">{label}</option>
+                  )}
+                </select>
               </span>
-              <ChevronDown className="h-4 w-4 text-slate-500" />
-            </Link>
+              <ChevronDown className="pointer-events-none absolute right-3 h-4 w-4 text-slate-500" />
+            </div>
             <div className="min-w-0 flex-1" />
             <button onClick={refreshWorkspace} aria-label="Refresh" className="h-11 w-11 rounded-[8px] border border-slate-200 bg-white shadow-sm">
               <RefreshCw className="mx-auto h-4 w-4 text-slate-600" />

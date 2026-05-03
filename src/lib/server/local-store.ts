@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TraceImport } from "../domain/audit";
 import {
@@ -525,16 +525,27 @@ class LocalEvalOpsStore implements EvalOpsStore {
   }
 
   private async load(): Promise<LocalState> {
+    let raw: string;
     try {
-      const raw = await readFile(this.statePath, "utf8");
+      raw = await readFile(this.statePath, "utf8");
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+        return emptyState();
+      }
+      throw error;
+    }
+
+    try {
       return { ...emptyState(), ...(JSON.parse(raw) as LocalState) };
     } catch {
-      return emptyState();
+      throw new Error("Local EvalOps store state file is unreadable.");
     }
   }
 
   private async save(state: LocalState) {
-    await writeFile(this.statePath, JSON.stringify(state, null, 2), "utf8");
+    const tempPath = `${this.statePath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tempPath, JSON.stringify(state, null, 2), "utf8");
+    await rename(tempPath, this.statePath);
   }
 }
 

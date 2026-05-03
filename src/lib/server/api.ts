@@ -47,6 +47,14 @@ export async function handleApi<T>(handler: (correlationId: string) => Promise<T
   }
 }
 
+export async function readJsonBody(request: Request) {
+  try {
+    return await request.json();
+  } catch {
+    throw new ApiError(400, "Request body must be valid JSON.", "invalid_json");
+  }
+}
+
 export function csvResponse(content: string, fileName: string) {
   return new Response(content, {
     headers: {

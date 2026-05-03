@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -132,5 +132,20 @@ describe("local evalops store", () => {
     const state = await store.getWorkspaceState(actor);
     expect(state.projects).toHaveLength(1);
     expect(state.activeProject?.name).toBe("Concurrent Audit");
+  });
+
+  it("does not mask unreadable local state as a missing workspace", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "evalops-store-"));
+    tempDirs.push(dir);
+    await writeFile(join(dir, "store.json"), "{", "utf8");
+    const store = await createLocalEvalOpsStore({ rootDir: dir });
+
+    await expect(
+      store.getWorkspaceState({
+        userId: "user_1",
+        email: "founder@example.com",
+        organizationId: "org_1",
+      }),
+    ).rejects.toThrow(/state file is unreadable/i);
   });
 });

@@ -130,6 +130,24 @@ describe("EvalOps API core flow", () => {
     expect(importPayload.error.message).toContain("Unsupported file type");
     expect(importPayload.error.correlationId).toBeTruthy();
   });
+
+  it("returns a user-safe error for malformed JSON request bodies", async () => {
+    const projectsRoute = await import("./projects/route");
+
+    const response = await projectsRoute.POST(
+      new NextRequest("http://localhost/api/projects", {
+        method: "POST",
+        body: "",
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.ok).toBe(false);
+    expect(payload.error.code).toBe("invalid_json");
+    expect(payload.error.message).toBe("Request body must be valid JSON.");
+  });
 });
 
 function jsonRequest(url: string, body: unknown) {
