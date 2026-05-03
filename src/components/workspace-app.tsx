@@ -4,15 +4,18 @@ import {
   AlertTriangle,
   CheckCircle2,
   Download,
+  FileJson,
+  History,
   Loader2,
   LogOut,
   Play,
   Plus,
   RefreshCw,
+  Trash2,
   UploadCloud,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Badge, Button, Card, PageHeader, ProgressBar } from "@/components/primitives";
+import { Badge, Button, Card, PageHeader, ProgressBar, type Tone } from "@/components/primitives";
 import { SELECTED_PROJECT_STORAGE_KEY } from "@/lib/project-selection";
 import type { WorkspaceState } from "@/lib/server/types";
 
@@ -34,7 +37,7 @@ type ApiEnvelope<T> =
 type MutateFn = <T>(
   label: string,
   action: () => Promise<T>,
-  projectId?: string | ((result: T) => string | undefined),
+  projectId?: string | null | ((result: T) => string | null | undefined),
 ) => Promise<void>;
 
 export function WorkspaceApp({ view }: { view: View }) {
@@ -43,11 +46,11 @@ export function WorkspaceApp({ view }: { view: View }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  async function refresh(projectId?: string) {
+  async function refresh(projectId?: string | null) {
     setLoading(true);
     setError(null);
     try {
-      const selectedProjectId = projectId || getStoredProjectId();
+      const selectedProjectId = projectId === undefined ? getStoredProjectId() : projectId || "";
       const response = await fetch(`/api/app-state${selectedProjectId ? `?projectId=${selectedProjectId}` : ""}`, {
         cache: "no-store",
       });
@@ -86,7 +89,7 @@ export function WorkspaceApp({ view }: { view: View }) {
   async function mutate<T>(
     label: string,
     action: () => Promise<T>,
-    projectId?: string | ((result: T) => string | undefined),
+    projectId?: string | null | ((result: T) => string | null | undefined),
   ) {
     setBusy(label);
     setError(null);
@@ -94,7 +97,14 @@ export function WorkspaceApp({ view }: { view: View }) {
       const result = await action();
       const nextProjectId =
         typeof projectId === "function" ? projectId(result) : projectId;
-      if (nextProjectId) {
+      if (nextProjectId === null) {
+        forgetProject();
+        window.dispatchEvent(
+          new CustomEvent("evalops:project-selected", {
+            detail: { projectId: "", source: "workspace" },
+          }),
+        );
+      } else if (nextProjectId) {
         rememberProject(nextProjectId);
         window.dispatchEvent(
           new CustomEvent("evalops:project-selected", {
@@ -102,7 +112,7 @@ export function WorkspaceApp({ view }: { view: View }) {
           }),
         );
       }
-      await refresh(nextProjectId || state?.activeProject?.id);
+      await refresh(nextProjectId === null ? null : nextProjectId || state?.activeProject?.id);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Action failed.");
     } finally {
@@ -178,6 +188,11 @@ function getStoredProjectId() {
 function rememberProject(projectId: string) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(SELECTED_PROJECT_STORAGE_KEY, projectId);
+}
+
+function forgetProject() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(SELECTED_PROJECT_STORAGE_KEY);
 }
 
 function DashboardView({
@@ -1297,6 +1312,7 @@ function SettingsView({
   mutate: MutateFn;
 }) {
   const project = state.activeProject;
+  const inventory = useDataInventory(state);
 
   return (
     <>
@@ -1343,35 +1359,53 @@ function SettingsView({
       <SettingsPrivacyCard
         key={`${project?.id || "no-project"}-${project?.updatedAt || ""}`}
         project={project}
+        state={state}
         busy={busy}
         mutate={mutate}
       />
       <Card className="mt-4 p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-950">Data Inventory</h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+              Project-scoped records currently visible in the workspace state.
+            </p>
+          </div>
+          <Badge tone="slate">{project ? project.name : "No project selected"}</Badge>
+        </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <InventoryMetric label="Raw uploads" value={inventory.rawUploads} detail={`${inventory.retainedUploads} retained / ${inventory.purgedUploads} purged`} />
+          <InventoryMetric label="Raw traces" value={inventory.rawTraces} detail={`${inventory.retainedTraces} retained / ${inventory.purgedTraces} purged`} />
+          <InventoryMetric label="Derived eval artifacts" value={inventory.derivedArtifacts} detail="Cases, graders, runs, reports, recommendations" />
+          <InventoryMetric label="Exports" value={inventory.exports} detail={`${inventory.generatedExports} generated / ${inventory.pendingExports} pending`} />
+          <InventoryMetric label="Audit / receipt records" value={inventory.auditRecords} detail={`${state.auditEvents.length} audit events / ${state.dataOperationReceipts.length} receipts`} />
+        </div>
+      </Card>
+      <Card className="mt-4 p-5">
         <h2 className="text-lg font-semibold text-slate-950">Data controls</h2>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-          Live exports are generated from persisted audit artifacts. Full project export and deletion are intentionally gated until they run through audited background jobs.
+          Live exports are generated from persisted audit artifacts. Full project export and deletion create customer-visible receipts.
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
           <ExportButton state={state} busy={busy} mutate={mutate} />
           <PdfExportButton state={state} busy={busy} mutate={mutate} />
-          <Button variant="secondary" disabled>
-            Full project export
-          </Button>
-          <Button variant="danger" disabled>
-            Delete project data
-          </Button>
+          <FullProjectExportButton state={state} busy={busy} mutate={mutate} />
+          <DeleteProjectButton state={state} busy={busy} mutate={mutate} />
         </div>
       </Card>
+      <SettingsHistoryCard state={state} />
     </>
   );
 }
 
 function SettingsPrivacyCard({
   project,
+  state,
   busy,
   mutate,
 }: {
   project: WorkspaceState["activeProject"];
+  state: WorkspaceState;
   busy: string | null;
   mutate: MutateFn;
 }) {
@@ -1379,78 +1413,315 @@ function SettingsPrivacyCard({
   const [riskPreferences, setRiskPreferences] = useState(project?.riskPreferences.join(", ") || "");
 
   return (
-    <Card className="mt-4 p-5">
-      <h2 className="text-lg font-semibold text-slate-950">Privacy controls</h2>
-      <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-        These controls affect future imports and generated artifacts for the selected project. Existing exports remain audit records.
-      </p>
-      <div className="mt-4 grid gap-4 lg:grid-cols-[320px_1fr]">
-        <SelectField
-          label="Privacy posture"
-          value={privacyMode}
-          onChange={(value) => setPrivacyMode(value as typeof privacyMode)}
-          options={[
-            ["redact_pii", "Redact likely PII"],
-            ["short_retention", "Short raw-data retention"],
-            ["derived_only", "Store derived evals only"],
-          ]}
-        />
-        <label className="block">
-          <span className="text-sm font-semibold text-slate-700">Project risks and goals</span>
-          <textarea
-            aria-label="Project risks and goals"
-            className="mt-2 min-h-24 w-full rounded-[7px] border border-slate-200 p-3 text-sm leading-6"
-            value={riskPreferences}
-            onChange={(event) => setRiskPreferences(event.target.value)}
+    <>
+      <Card className="mt-4 p-5">
+        <h2 className="text-lg font-semibold text-slate-950">Privacy controls</h2>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+          These controls affect future imports and generated artifacts for the selected project. Existing exports remain audit records.
+        </p>
+        <div className="mt-4 grid gap-4 lg:grid-cols-[320px_1fr]">
+          <SelectField
+            label="Privacy posture"
+            value={privacyMode}
+            onChange={(value) => setPrivacyMode(value as typeof privacyMode)}
+            options={[
+              ["redact_pii", "Redact likely PII"],
+              ["short_retention", "Short raw-data retention"],
+              ["derived_only", "Store derived evals only"],
+            ]}
           />
-          <span className="mt-2 block text-xs leading-5 text-slate-500">
-            Comma-separated tags drive audit copy, empty-state guidance, and generated recommendation focus.
-          </span>
-        </label>
-      </div>
-      <div className="mt-4 grid gap-3 lg:grid-cols-3">
-        <CheckboxRow
-          checked={privacyMode === "redact_pii"}
-          onChange={(checked) => checked && setPrivacyMode("redact_pii")}
-          label="PII redaction"
-          detail="Detect likely email, card, phone, and token values before review."
-        />
-        <CheckboxRow
-          checked={privacyMode === "short_retention"}
-          onChange={(checked) => checked && setPrivacyMode("short_retention")}
-          label="Short raw-data retention"
-          detail="Private pilot target: 14 days for raw trace review, then derived artifacts remain."
-        />
-        <CheckboxRow
-          checked={privacyMode === "derived_only"}
-          onChange={(checked) => checked && setPrivacyMode("derived_only")}
-          label="Store derived evals only"
-          detail="Keep generated evals, graders, reports, and safe metadata instead of raw trace content where possible."
-        />
-      </div>
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        <Button
-          disabled={!project || busy === "settings"}
-          onClick={() =>
-            mutate("settings", () => {
-              if (!project) throw new Error("Create a project before saving privacy settings.");
-              return api(`/api/projects/${project.id}/settings`, {
-                method: "PATCH",
-                body: JSON.stringify({
-                  privacyMode,
-                  riskPreferences: riskPreferences
-                    .split(",")
-                    .map((item) => item.trim())
-                    .filter(Boolean),
-                }),
-              });
-            }, project?.id)
-          }
+          <label className="block">
+            <span className="text-sm font-semibold text-slate-700">Project risks and goals</span>
+            <textarea
+              aria-label="Project risks and goals"
+              className="mt-2 min-h-24 w-full rounded-[7px] border border-slate-200 p-3 text-sm leading-6"
+              value={riskPreferences}
+              onChange={(event) => setRiskPreferences(event.target.value)}
+            />
+            <span className="mt-2 block text-xs leading-5 text-slate-500">
+              Comma-separated tags drive audit copy, empty-state guidance, and generated recommendation focus.
+            </span>
+          </label>
+        </div>
+        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+          <CheckboxRow
+            checked={privacyMode === "redact_pii"}
+            onChange={(checked) => checked && setPrivacyMode("redact_pii")}
+            label="PII redaction"
+            detail="Detect likely email, card, phone, and token values before review."
+          />
+          <CheckboxRow
+            checked={privacyMode === "short_retention"}
+            onChange={(checked) => checked && setPrivacyMode("short_retention")}
+            label="Short raw-data retention"
+            detail="Private pilot target: 14 days for raw trace review, then derived artifacts remain."
+          />
+          <CheckboxRow
+            checked={privacyMode === "derived_only"}
+            onChange={(checked) => checked && setPrivacyMode("derived_only")}
+            label="Store derived evals only"
+            detail="Keep generated evals, graders, reports, and safe metadata instead of raw trace content where possible."
+          />
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Button
+            disabled={!project || busy === "settings"}
+            onClick={() =>
+              mutate("settings", () => {
+                if (!project) throw new Error("Create a project before saving privacy settings.");
+                return api(`/api/projects/${project.id}/settings`, {
+                  method: "PATCH",
+                  body: JSON.stringify({
+                    privacyMode,
+                    riskPreferences: riskPreferences
+                      .split(",")
+                      .map((item) => item.trim())
+                      .filter(Boolean),
+                  }),
+                });
+              }, project?.id)
+            }
+          >
+            {busy === "settings" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Save privacy settings
+          </Button>
+          <ReadOnlySetting label="Data residency" value="Deployment region policy" />
+        </div>
+      </Card>
+      <Card className="mt-4 p-5">
+        <h2 className="text-lg font-semibold text-slate-950">Retention Status</h2>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+          {retentionStatusCopy(project?.privacyMode || "redact_pii")}
+        </p>
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <RetentionMetric label="Earliest raw upload expiry" value={formatOptionalDate(earliestDate(state.uploadedFiles.map((file) => file.rawRetentionExpiresAt)))} />
+          <RetentionMetric label="Earliest raw trace expiry" value={formatOptionalDate(earliestDate(state.traces.map((trace) => trace.rawRetentionExpiresAt)))} />
+          <RetentionMetric label="Raw purge state" value={rawPurgeSummary(state)} />
+        </div>
+      </Card>
+    </>
+  );
+}
+
+function InventoryMetric({ label, value, detail }: { label: string; value: number; detail: string }) {
+  return (
+    <div className="rounded-[8px] border border-slate-200 p-3">
+      <p className="text-xs font-semibold uppercase tracking-normal text-slate-500">{label}</p>
+      <p className="mt-2 text-2xl font-semibold text-slate-950">{value}</p>
+      <p className="mt-2 text-xs leading-5 text-slate-500">{detail}</p>
+    </div>
+  );
+}
+
+function RetentionMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[8px] border border-slate-200 p-3">
+      <p className="text-xs font-semibold uppercase tracking-normal text-slate-500">{label}</p>
+      <p className="mt-2 text-sm font-semibold text-slate-950">{value}</p>
+    </div>
+  );
+}
+
+function FullProjectExportButton({
+  state,
+  busy,
+  mutate,
+}: {
+  state: WorkspaceState;
+  busy: string | null;
+  mutate: MutateFn;
+}) {
+  return state.activeProject ? (
+    <Button
+      variant="secondary"
+      disabled={busy === "full-project-export"}
+      onClick={() =>
+        mutate("full-project-export", () =>
+          api(`/api/projects/${state.activeProject?.id}/exports`, {
+            method: "POST",
+            body: JSON.stringify({ type: "full_project_json" }),
+          }),
+        )
+      }
+    >
+      {busy === "full-project-export" ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileJson className="h-4 w-4" />}
+      Full project export
+    </Button>
+  ) : null;
+}
+
+function DeleteProjectButton({
+  state,
+  busy,
+  mutate,
+}: {
+  state: WorkspaceState;
+  busy: string | null;
+  mutate: MutateFn;
+}) {
+  const [open, setOpen] = useState(false);
+  const [confirmationName, setConfirmationName] = useState("");
+  const project = state.activeProject;
+  const matches = Boolean(project && confirmationName === project.name);
+
+  if (!project) return null;
+
+  return (
+    <>
+      <Button variant="danger" disabled={busy === "delete-project"} onClick={() => setOpen(true)}>
+        <Trash2 className="h-4 w-4" />
+        Delete project data
+      </Button>
+      {open ? (
+        <div
+          aria-labelledby="delete-project-title"
+          aria-modal="true"
+          role="dialog"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4"
         >
-          {busy === "settings" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          Save privacy settings
-        </Button>
-        <ReadOnlySetting label="Data residency" value="Deployment region policy" />
+          <div className="w-full max-w-lg rounded-[8px] border border-slate-200 bg-white p-5 shadow-xl">
+            <div className="flex items-start gap-3">
+              <span className="mt-1 rounded-[8px] bg-red-50 p-2 text-red-600">
+                <Trash2 className="h-5 w-5" />
+              </span>
+              <div>
+                <h2 id="delete-project-title" className="text-lg font-semibold text-slate-950">
+                  Delete project data
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  This queues an audited deletion for project records and associated storage objects. Type {project.name} to confirm.
+                </p>
+              </div>
+            </div>
+            <label className="mt-5 block">
+              <span className="text-sm font-semibold text-slate-700">Confirmation project name</span>
+              <input
+                aria-label="Confirmation project name"
+                className="mt-2 h-11 w-full rounded-[7px] border border-slate-200 px-3 text-sm"
+                value={confirmationName}
+                onChange={(event) => setConfirmationName(event.target.value)}
+              />
+            </label>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setOpen(false);
+                  setConfirmationName("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                disabled={!matches || busy === "delete-project"}
+                onClick={() =>
+                  mutate(
+                    "delete-project",
+                    () =>
+                      api(`/api/projects/${project.id}`, {
+                        method: "DELETE",
+                        body: JSON.stringify({ confirmationName }),
+                      }),
+                    () => null,
+                  ).then(() => {
+                    setOpen(false);
+                    setConfirmationName("");
+                  })
+                }
+              >
+                {busy === "delete-project" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function SettingsHistoryCard({ state }: { state: WorkspaceState }) {
+  const rows = useMemo(() => {
+    const exportRows = state.exports.map((record) => ({
+      id: `export-${record.id}`,
+      kind: "Export",
+      label: exportTypeLabel(record.type),
+      status: record.status,
+      timestamp: record.completedAt || record.createdAt,
+      fileName: record.fileName,
+      size: record.sizeBytes,
+      downloadHref: record.status === "generated" ? `/api/exports/${record.id}/download` : "",
+    }));
+    const receiptRows = state.dataOperationReceipts.map((receipt) => ({
+      id: `receipt-${receipt.id}`,
+      kind: "Receipt",
+      label: receiptLabel(receipt),
+      status: receipt.status,
+      timestamp: receipt.completedAt || receipt.createdAt,
+      fileName: typeof receipt.metadata.fileName === "string" ? receipt.metadata.fileName : "",
+      size: typeof receipt.metadata.sizeBytes === "number" ? receipt.metadata.sizeBytes : 0,
+      downloadHref: `/api/receipts/${receipt.id}/download`,
+    }));
+    return [...exportRows, ...receiptRows].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  }, [state.exports, state.dataOperationReceipts]);
+
+  return (
+    <Card className="mt-4 overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-slate-100 p-4">
+        <History className="h-4 w-4 text-blue-600" />
+        <h2 className="text-lg font-semibold text-slate-950">Export History / Receipts</h2>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-left text-sm">
+          <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-normal text-slate-500">
+            <tr>
+              <th className="px-4 py-3">Type</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Timestamp</th>
+              <th className="px-4 py-3">File</th>
+              <th className="px-4 py-3 text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {rows.map((row) => (
+              <tr key={row.id}>
+                <td className="px-4 py-3">
+                  <p className="font-semibold text-slate-950">{row.label}</p>
+                  <p className="mt-1 text-xs text-slate-500">{row.kind}</p>
+                </td>
+                <td className="px-4 py-3">
+                  <Badge tone={statusTone(row.status)}>{row.status}</Badge>
+                </td>
+                <td className="px-4 py-3 text-slate-600">{formatDate(row.timestamp)}</td>
+                <td className="px-4 py-3 text-slate-600">
+                  {row.fileName ? (
+                    <>
+                      <span className="block font-medium text-slate-800">{row.fileName}</span>
+                      <span className="text-xs text-slate-500">{row.size ? formatBytes(row.size) : "Size pending"}</span>
+                    </>
+                  ) : (
+                    <span className="text-slate-400">Receipt only</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-right">
+                  {row.downloadHref ? (
+                    <a
+                      className="inline-flex h-9 items-center justify-center gap-2 rounded-[7px] border border-slate-200 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      href={row.downloadHref}
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      Download
+                    </a>
+                  ) : (
+                    <span className="text-xs text-slate-400">Unavailable</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!rows.length ? <div className="p-4"><EmptyText text="Exports and receipts appear after data operations." /></div> : null}
       </div>
     </Card>
   );
@@ -1486,6 +1757,69 @@ function useSummary(state: WorkspaceState) {
       })),
     };
   }, [state]);
+}
+
+function useDataInventory(state: WorkspaceState) {
+  return useMemo(() => {
+    const purgedUploads = state.uploadedFiles.filter((file) => file.rawPurgedAt || file.storageDeletedAt).length;
+    const purgedTraces = state.traces.filter((trace) => trace.rawPurgedAt).length;
+    const derivedArtifacts =
+      state.evalCases.length +
+      state.graders.length +
+      state.evalRuns.length +
+      state.failureClusters.length +
+      state.promptVersions.length +
+      state.promptCandidates.length +
+      state.routingRules.length +
+      state.cacheRecommendations.length +
+      state.reports.length;
+    const generatedExports = state.exports.filter((record) => record.status === "generated").length;
+
+    return {
+      rawUploads: state.uploadedFiles.length,
+      retainedUploads: state.uploadedFiles.length - purgedUploads,
+      purgedUploads,
+      rawTraces: state.traces.length,
+      retainedTraces: state.traces.length - purgedTraces,
+      purgedTraces,
+      derivedArtifacts,
+      exports: state.exports.length,
+      generatedExports,
+      pendingExports: state.exports.length - generatedExports,
+      auditRecords: state.auditEvents.length + state.dataOperationReceipts.length,
+    };
+  }, [state]);
+}
+
+function retentionStatusCopy(mode: string) {
+  if (mode === "derived_only") {
+    return "Derived-only mode keeps eval artifacts and safe metadata visible while raw trace content is minimized.";
+  }
+  if (mode === "short_retention") {
+    return "Short-retention mode keeps raw uploads and traces only through their configured review window, then preserves derived audit artifacts.";
+  }
+  return "PII redaction mode keeps raw review data available with likely personal data redacted before eval and reporting work.";
+}
+
+function earliestDate(values: Array<string | undefined>) {
+  return values
+    .filter((value): value is string => Boolean(value))
+    .sort((a, b) => a.localeCompare(b))[0];
+}
+
+function formatOptionalDate(value?: string) {
+  return value ? formatDate(value) : "Not scheduled";
+}
+
+function rawPurgeSummary(state: WorkspaceState) {
+  const rawItems = state.uploadedFiles.length + state.traces.length;
+  const purgedItems =
+    state.uploadedFiles.filter((file) => file.rawPurgedAt || file.storageDeletedAt).length +
+    state.traces.filter((trace) => trace.rawPurgedAt).length;
+  if (!rawItems) return "No raw records";
+  if (purgedItems === rawItems) return "All raw records purged";
+  if (purgedItems > 0) return `${purgedItems} of ${rawItems} raw records purged`;
+  return "Raw records retained";
 }
 
 function ProjectMeta({ state }: { state: WorkspaceState }) {
@@ -1706,6 +2040,28 @@ function privacyModeLabel(mode: string) {
   if (mode === "derived_only") return "Derived only";
   if (mode === "short_retention") return "Short retention";
   return "Redact likely PII";
+}
+
+function exportTypeLabel(type: WorkspaceState["exports"][number]["type"]) {
+  if (type === "audit_report_pdf") return "Audit report PDF";
+  if (type === "full_project_json") return "Full project JSON";
+  if (type === "issues_csv") return "Issues CSV";
+  if (type === "audit_report_csv") return "Audit report CSV";
+  return "Eval pack CSV";
+}
+
+function receiptLabel(receipt: WorkspaceState["dataOperationReceipts"][number]) {
+  if (receipt.operation === "full_project_export") return "Full project export receipt";
+  if (receipt.operation === "project_delete") return "Project deletion receipt";
+  if (receipt.operation === "raw_trace_purge") return "Raw trace purge receipt";
+  return "Export download receipt";
+}
+
+function statusTone(status: string): Tone {
+  if (status === "failed") return "red";
+  if (status === "generated" || status === "completed") return "green";
+  if (status === "running") return "blue";
+  return "slate";
 }
 
 function candidatePromptBody(title: string) {

@@ -51,11 +51,16 @@ export type Project = {
   updatedAt: string;
 };
 
-export type StoredTrace = NormalizedTrace & {
+export type StoredTrace = Omit<NormalizedTrace, "input" | "output" | "metadata"> & {
   id: string;
   organizationId: string;
   projectId: string;
-  traceImportId: string;
+  traceImportId?: string;
+  input: string | null;
+  output: string | null;
+  metadata: Record<string, unknown> | null;
+  rawRetentionExpiresAt?: string;
+  rawPurgedAt?: string;
 };
 
 export type UploadedFile = {
@@ -69,6 +74,9 @@ export type UploadedFile = {
   storageBucket: string;
   storagePath: string;
   checksum: string;
+  rawRetentionExpiresAt?: string;
+  rawPurgedAt?: string;
+  storageDeletedAt?: string;
   createdAt: string;
 };
 
@@ -76,7 +84,7 @@ export type ProcessingJob = {
   id: string;
   organizationId: string;
   projectId: string;
-  traceImportId: string;
+  traceImportId?: string;
   action:
     | "trace_import"
     | "pii_redaction"
@@ -86,7 +94,10 @@ export type ProcessingJob = {
     | "baseline_run"
     | "prompt_optimization"
     | "routing_analysis"
-    | "report_generation";
+    | "report_generation"
+    | "project_export"
+    | "project_delete"
+    | "raw_trace_purge";
   status: "queued" | "running" | "completed" | "failed";
   errorMessage?: string;
   metadata?: Record<string, unknown>;
@@ -234,14 +245,34 @@ export type ExportRecord = {
   id: string;
   organizationId: string;
   projectId: string;
-  type: "eval_pack_csv" | "issues_csv" | "audit_report_csv" | "audit_report_pdf";
-  status: "generated" | "failed";
+  type: "eval_pack_csv" | "issues_csv" | "audit_report_csv" | "audit_report_pdf" | "full_project_json";
+  status: "queued" | "running" | "generated" | "failed";
   storageBucket: string;
   storagePath: string;
   fileName: string;
   contentType: string;
   sizeBytes: number;
+  checksum?: string;
+  receiptId?: string;
+  metadata?: Record<string, unknown>;
+  completedAt?: string;
+  expiresAt?: string;
   createdAt: string;
+};
+
+export type DataOperationReceipt = {
+  id: string;
+  organizationId: string;
+  projectId?: string;
+  operation: "full_project_export" | "project_delete" | "raw_trace_purge" | "export_download";
+  status: "requested" | "running" | "completed" | "failed";
+  actorUserId: string;
+  summary: string;
+  metadata: Record<string, unknown>;
+  exportId?: string;
+  jobId?: string;
+  createdAt: string;
+  completedAt?: string;
 };
 
 export type AuditEvent = {
@@ -279,6 +310,7 @@ export type WorkspaceState = {
   cacheRecommendations: CacheRecommendation[];
   reports: Report[];
   exports: ExportRecord[];
+  dataOperationReceipts: DataOperationReceipt[];
   auditEvents: AuditEvent[];
 };
 
@@ -310,6 +342,29 @@ export type ProcessTraceImportInput = {
 
 export type CreateExportInput = {
   type?: ExportRecord["type"];
+};
+
+export type ProcessFullProjectExportInput = {
+  projectId: string;
+  exportId: string;
+  jobId?: string;
+};
+
+export type DeleteProjectInput = {
+  confirmationName: string;
+};
+
+export type ProcessProjectDeletionInput = {
+  projectId: string;
+  jobId: string;
+  receiptId: string;
+};
+
+export type PurgeRawProjectDataInput = {
+  projectId: string;
+  traceImportId?: string;
+  reason: "derived_only" | "retention_expired" | "project_delete";
+  now?: string;
 };
 
 export type UpdateIssueInput = {
@@ -349,7 +404,25 @@ export type EvalOpsStore = {
     status?: EvalCase["status"];
   }): Promise<StoredEvalCase>;
   createExport(actor: ActorContext, projectId: string, input?: CreateExportInput): Promise<ExportRecord>;
+  requestFullProjectExport(actor: ActorContext, projectId: string): Promise<{
+    exportRecord: ExportRecord;
+    job: ProcessingJob;
+    receipt: DataOperationReceipt;
+  }>;
+  processFullProjectExport(actor: ActorContext, input: ProcessFullProjectExportInput): Promise<{
+    exportRecord: ExportRecord;
+    job: ProcessingJob;
+    receipt: DataOperationReceipt;
+  }>;
   getExport(actor: ActorContext, exportId: string): Promise<{ record: ExportRecord; content: string | Uint8Array }>;
+  requestProjectDeletion(actor: ActorContext, projectId: string, input: DeleteProjectInput): Promise<{
+    job: ProcessingJob;
+    receipt: DataOperationReceipt;
+  }>;
+  processProjectDeletion(actor: ActorContext, input: ProcessProjectDeletionInput): Promise<{
+    receipt: DataOperationReceipt;
+  }>;
+  purgeRawProjectData(actor: ActorContext, input: PurgeRawProjectDataInput): Promise<DataOperationReceipt>;
   rerunEvaluation(actor: ActorContext, projectId: string): Promise<EvalRun>;
   promotePromptCandidate(actor: ActorContext, projectId: string, candidateId: string): Promise<PromptVersion>;
 };

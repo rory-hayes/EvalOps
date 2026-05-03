@@ -455,6 +455,131 @@ describe("EvalOps API core flow", () => {
     expect(graderPayload.data.model).toBe("gpt-5.5");
   });
 
+  it("generates a full project JSON export through the API", async () => {
+    const projectsRoute = await import("./projects/route");
+    const importsRoute = await import("./projects/[projectId]/imports/route");
+    const exportsRoute = await import("./projects/[projectId]/exports/route");
+    const downloadRoute = await import("./exports/[exportId]/download/route");
+    const receiptDownloadRoute = await import("./receipts/[receiptId]/download/route");
+
+    const projectResponse = await projectsRoute.POST(
+      jsonRequest("http://localhost/api/projects", {
+        name: "Full Project Export Audit",
+        workflowType: "support_assistant",
+        objective: "Verify full project export packages are generated through the API.",
+        riskPreferences: ["Privacy"],
+        privacyMode: "redact_pii",
+      }),
+    );
+    const projectPayload = await projectResponse.json();
+    const projectId = projectPayload.data.id as string;
+
+    const form = new FormData();
+    form.append(
+      "file",
+      new File(
+        [
+          "conversation_id,user_input,assistant_output\n" +
+            "c_1,I asked three times and this is still not fixed,Try restarting the app.",
+        ],
+        "full-export.csv",
+        { type: "text/csv" },
+      ),
+    );
+    await importsRoute.POST(
+      new NextRequest(`http://localhost/api/projects/${projectId}/imports`, {
+        method: "POST",
+        body: form,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+
+    const exportResponse = await exportsRoute.POST(
+      jsonRequest(`http://localhost/api/projects/${projectId}/exports`, {
+        type: "full_project_json",
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    const exportPayload = await exportResponse.json();
+    expect(exportPayload.ok).toBe(true);
+    expect(exportPayload.data.type).toBe("full_project_json");
+    expect(exportPayload.data.status).toBe("generated");
+    expect(exportPayload.data.checksum).toBeTruthy();
+
+    const download = await downloadRoute.GET(
+      new NextRequest(`http://localhost/api/exports/${exportPayload.data.id}/download`),
+      { params: Promise.resolve({ exportId: exportPayload.data.id }) },
+    );
+    const packagePayload = JSON.parse(await download.text());
+    expect(packagePayload.manifest.projectId).toBe(projectId);
+    expect(packagePayload.dataInventory.rawUploads.count).toBe(1);
+    expect(packagePayload.records.evalCases).toHaveLength(1);
+
+    const receiptDownload = await receiptDownloadRoute.GET(
+      new NextRequest(`http://localhost/api/receipts/${exportPayload.data.receiptId}/download`),
+      { params: Promise.resolve({ receiptId: exportPayload.data.receiptId }) },
+    );
+    const receiptPayload = JSON.parse(await receiptDownload.text());
+    expect(receiptPayload.receipt.operation).toBe("full_project_export");
+    expect(receiptPayload.receipt.status).toBe("completed");
+  });
+
+  it("deletes a project through the API only after exact name confirmation", async () => {
+    const projectsRoute = await import("./projects/route");
+    const stateRoute = await import("./app-state/route");
+    const projectRoute = await import("./projects/[projectId]/route");
+
+    const projectResponse = await projectsRoute.POST(
+      jsonRequest("http://localhost/api/projects", {
+        name: "Delete Through API Audit",
+        workflowType: "support_assistant",
+        objective: "Verify deletion is confirmed, audited, and receipt-backed.",
+        riskPreferences: ["Privacy"],
+        privacyMode: "redact_pii",
+      }),
+    );
+    const projectPayload = await projectResponse.json();
+    const projectId = projectPayload.data.id as string;
+
+    const mismatchResponse = await projectRoute.DELETE(
+      jsonRequest(
+        `http://localhost/api/projects/${projectId}`,
+        { confirmationName: "Delete Through API" },
+        "DELETE",
+      ),
+      { params: Promise.resolve({ projectId }) },
+    );
+    const mismatchPayload = await mismatchResponse.json();
+    expect(mismatchResponse.status).toBe(400);
+    expect(mismatchPayload.error.code).toBe("confirmation_mismatch");
+
+    const deleteResponse = await projectRoute.DELETE(
+      jsonRequest(
+        `http://localhost/api/projects/${projectId}`,
+        { confirmationName: "Delete Through API Audit" },
+        "DELETE",
+      ),
+      { params: Promise.resolve({ projectId }) },
+    );
+    const deletePayload = await deleteResponse.json();
+    expect(deletePayload.ok).toBe(true);
+    expect(deletePayload.data.operation).toBe("project_delete");
+    expect(deletePayload.data.status).toBe("completed");
+
+    const stateResponse = await stateRoute.GET(new NextRequest("http://localhost/api/app-state"));
+    const statePayload = await stateResponse.json();
+    expect(statePayload.data.projects).toHaveLength(0);
+    expect(statePayload.data.dataOperationReceipts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: "project_delete",
+          status: "completed",
+          projectId,
+        }),
+      ]),
+    );
+  });
+
   it("returns a user-safe error for malformed JSON request bodies", async () => {
     const projectsRoute = await import("./projects/route");
 

@@ -41,5 +41,9 @@ export const promotePromptRequestSchema = z.object({
 });
 
 export const createExportRequestSchema = z.object({
-  type: z.enum(["eval_pack_csv", "issues_csv", "audit_report_csv", "audit_report_pdf"]).default("eval_pack_csv"),
+  type: z.enum(["eval_pack_csv", "issues_csv", "audit_report_csv", "audit_report_pdf", "full_project_json"]).default("eval_pack_csv"),
+});
+
+export const deleteProjectRequestSchema = z.object({
+  confirmationName: z.string().trim().min(1).max(120),
 });

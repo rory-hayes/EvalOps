@@ -12,7 +12,7 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   webServer: {
-    command: "rm -rf .evalops/e2e && EVALOPS_TEST_MODE=1 EVALOPS_TEST_STORE_PATH=.evalops/e2e npm run dev -- --port 3100",
+    command: "rm -rf .next/dev .evalops/e2e && EVALOPS_TEST_MODE=1 EVALOPS_TEST_STORE_PATH=.evalops/e2e npm run dev -- --port 3100",
     url: "http://localhost:3100",
     reuseExistingServer: false,
     timeout: 120_000,

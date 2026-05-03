@@ -78,7 +78,7 @@ test("user completes Eval Debt Audit flow end to end", async ({ page }) => {
   await expect(page.getByText("Operational actions")).toBeVisible();
 
   await page.goto("/settings");
-  await expect(page.getByText("PII redaction")).toBeVisible();
+  await expect(page.locator("span").filter({ hasText: /^PII redaction$/ })).toBeVisible();
   await expect(page.locator("span").filter({ hasText: /^Short raw-data retention$/ })).toBeVisible();
   await expect(page.locator("span").filter({ hasText: /^Store derived evals only$/ })).toBeVisible();
   await expect(page.getByText("Data residency")).toBeVisible();
@@ -87,7 +87,27 @@ test("user completes Eval Debt Audit flow end to end", async ({ page }) => {
   await page.getByRole("button", { name: /save privacy settings/i }).click();
   await expect(page.getByLabel("Privacy posture")).toHaveValue("derived_only");
   await expect(page.getByRole("button", { name: /Export CSV/i })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Full project export/i })).toBeDisabled();
-  await expect(page.getByRole("button", { name: /Delete project data/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Data Inventory" })).toBeVisible();
+  await expect(page.getByText("Raw uploads")).toBeVisible();
+  await expect(page.getByText("Raw traces")).toBeVisible();
+  await expect(page.getByText("Derived eval artifacts")).toBeVisible();
+  await expect(page.getByText("Audit / receipt records")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Retention Status" })).toBeVisible();
+  await expect(page.getByText("Derived-only mode keeps eval artifacts and safe metadata visible while raw trace content is minimized.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Export History / Receipts" })).toBeVisible();
+  await expect(page.getByText("0 retained / 1 purged").first()).toBeVisible();
+  await expect(page.getByText("Eval pack CSV")).toBeVisible();
+  await expect(page.getByText("Audit report PDF")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Full project export/i })).toBeEnabled();
+  await page.getByRole("button", { name: /Full project export/i }).click();
+  await expect(page.getByText("Full project JSON")).toBeVisible();
+  await expect(page.getByText("Full project export receipt")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Download" }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /Delete project data/i })).toBeEnabled();
+  await page.getByRole("button", { name: /Delete project data/i }).click();
+  await expect(page.getByRole("dialog", { name: "Delete project data" })).toBeVisible();
+  await expect(page.getByText("Type Support Assistant Audit to confirm.")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("dialog", { name: "Delete project data" })).toBeHidden();
   await expect(page.getByRole("main").getByRole("button", { name: "Sign out" })).toBeVisible();
 });

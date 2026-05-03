@@ -1,19 +1,29 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TraceImport } from "../domain/audit";
 import {
   buildCsvExport,
   inferTraceSourceType,
+  type NormalizedTrace,
   parseTraceFile,
 } from "../domain/trace-processing";
 import { generateAuditArtifacts, type AuditArtifacts } from "@/lib/ai/openai-audit-generation";
 import { buildAuditReportPdf } from "./audit-report-pdf";
 import { ApiError } from "./auth";
+import {
+  buildFullProjectExportPackage,
+  checksumContent,
+  createReceipt,
+  encodeFullProjectExportPackage,
+  rawRetentionExpiryFrom,
+} from "./privacy-operations";
 import type {
   ActorContext,
   AuditEvent,
   CacheRecommendation,
+  DataOperationReceipt,
+  DeleteProjectInput,
   CreateProjectInput,
   CreateExportInput,
   CreateTraceImportInput,
@@ -25,10 +35,13 @@ import type {
   Organization,
   OrganizationMembership,
   ProcessingJob,
+  ProcessFullProjectExportInput,
+  ProcessProjectDeletionInput,
   ProcessTraceImportInput,
   Project,
   PromptCandidate,
   PromptVersion,
+  PurgeRawProjectDataInput,
   Report,
   RoutingRule,
   StoredEvalCase,
@@ -63,6 +76,7 @@ type LocalState = {
   cacheRecommendations: CacheRecommendation[];
   reports: Report[];
   exports: ExportRecord[];
+  dataOperationReceipts: DataOperationReceipt[];
   auditEvents: AuditEvent[];
 };
 
@@ -87,6 +101,7 @@ const emptyState = (): LocalState => ({
   cacheRecommendations: [],
   reports: [],
   exports: [],
+  dataOperationReceipts: [],
   auditEvents: [],
 });
 
@@ -227,6 +242,10 @@ class LocalEvalOpsStore implements EvalOpsStore {
     const state = await this.load();
     const context = requireMembership(state, actor);
     const project = findProject(state, context.organization.id, projectId);
+    const shouldPurgeRaw =
+      input.privacyMode === "derived_only" &&
+      (state.uploadedFiles.some((item) => item.projectId === project.id && !item.rawPurgedAt) ||
+        state.traces.some((item) => item.projectId === project.id && !item.rawPurgedAt));
     if (input.privacyMode !== undefined) project.privacyMode = input.privacyMode;
     if (input.riskPreferences !== undefined) project.riskPreferences = normalizeList(input.riskPreferences);
     project.updatedAt = new Date().toISOString();
@@ -236,6 +255,12 @@ class LocalEvalOpsStore implements EvalOpsStore {
         riskPreferenceCount: project.riskPreferences.length,
       }),
     );
+    if (shouldPurgeRaw) {
+      await purgeRawProjectDataInState(state, this.rootDir, actor, {
+        projectId: project.id,
+        reason: "derived_only",
+      });
+    }
     await this.save(state);
     return project;
     });
@@ -265,6 +290,12 @@ class LocalEvalOpsStore implements EvalOpsStore {
     }
     const source = sourceFromFileName(input.fileName, input.contentType);
     const storagePath = `${project.organizationId}/${project.id}/${traceImportId}/${input.fileName}`;
+    const rawRetentionExpiresAt =
+      project.privacyMode === "short_retention"
+        ? rawRetentionExpiryFrom(now)
+        : project.privacyMode === "derived_only"
+          ? now
+          : undefined;
     const importRecord: TraceImport = {
       id: traceImportId,
       source,
@@ -276,6 +307,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
       redactionStatus: "in_progress",
       primaryIntent: "Pending",
       riskLevel: "low",
+      rawRetentionExpiresAt,
     };
     const uploadedFile: UploadedFile = {
       id: fileId,
@@ -288,6 +320,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
       storageBucket: "trace-uploads",
       storagePath,
       checksum,
+      rawRetentionExpiresAt,
       createdAt: now,
     };
     const job: ProcessingJob = {
@@ -370,10 +403,14 @@ class LocalEvalOpsStore implements EvalOpsStore {
         organizationId: project.organizationId,
         projectId: project.id,
         traceImportId: importRecord.id,
+        rawRetentionExpiresAt: importRecord.rawRetentionExpiresAt || uploadedFile.rawRetentionExpiresAt,
       }));
       state.traces.push(...traces);
 
-      const artifacts = await generateAuditArtifacts({ project, traces });
+      const artifacts = await generateAuditArtifacts({
+        project,
+        traces: traces as Array<NormalizedTrace & { id: string }>,
+      });
       upsertArtifacts(state, actor, project, artifacts, traces, {
         traceImportId: importRecord.id,
         jobId: job.id,
@@ -405,6 +442,14 @@ class LocalEvalOpsStore implements EvalOpsStore {
           generation: artifacts.generationMetadata,
         }),
       );
+      if (project.privacyMode === "derived_only") {
+        await purgeRawProjectDataInState(state, this.rootDir, actor, {
+          projectId: project.id,
+          traceImportId: importRecord.id,
+          reason: "derived_only",
+          now: job.completedAt,
+        });
+      }
     } catch (error) {
       importRecord.status = "failed";
       importRecord.redactionStatus = "failed";
@@ -592,6 +637,249 @@ class LocalEvalOpsStore implements EvalOpsStore {
         ? await readFile(join(this.rootDir, "exports", record.id))
         : await readFile(join(this.rootDir, "exports", record.id), "utf8");
     return { record, content };
+  }
+
+  async requestFullProjectExport(actor: ActorContext, projectId: string) {
+    return this.withWriteLock(async () => {
+    const state = await this.load();
+    const context = requireMembership(state, actor);
+    const project = findProject(state, context.organization.id, projectId);
+    const now = new Date().toISOString();
+    const fileName = `${slugify(project.name)}-full-project-export.json`;
+    const exportRecord: ExportRecord = {
+      id: makeId("exp"),
+      organizationId: project.organizationId,
+      projectId: project.id,
+      type: "full_project_json",
+      status: "queued",
+      storageBucket: "exports",
+      storagePath: `${project.organizationId}/${project.id}/${Date.now()}-${fileName}`,
+      fileName,
+      contentType: "application/json",
+      sizeBytes: 0,
+      metadata: { requestedBy: actor.userId },
+      createdAt: now,
+    };
+    const job: ProcessingJob = {
+      id: makeId("job"),
+      organizationId: project.organizationId,
+      projectId: project.id,
+      action: "project_export",
+      status: "queued",
+      metadata: { exportId: exportRecord.id, type: exportRecord.type },
+      createdAt: now,
+    };
+    const receipt = createReceipt({
+      id: makeId("receipt"),
+      organizationId: project.organizationId,
+      projectId: project.id,
+      operation: "full_project_export",
+      status: "requested",
+      actorUserId: actor.userId,
+      summary: `Full project export requested for ${project.name}.`,
+      metadata: { exportId: exportRecord.id, projectName: project.name },
+      exportId: exportRecord.id,
+      jobId: job.id,
+      createdAt: now,
+    });
+    exportRecord.receiptId = receipt.id;
+    state.exports.unshift(exportRecord);
+    state.processingJobs.unshift(job);
+    state.dataOperationReceipts.unshift(receipt);
+    state.auditEvents.push(
+      audit(actor, project.organizationId, "export", exportRecord.id, "project_export.requested", {
+        projectId: project.id,
+        receiptId: receipt.id,
+      }),
+    );
+    await this.save(state);
+    return { exportRecord, job, receipt };
+    });
+  }
+
+  async processFullProjectExport(actor: ActorContext, input: ProcessFullProjectExportInput) {
+    return this.withWriteLock(async () => {
+    const state = await this.load();
+    const context = requireMembership(state, actor);
+    const project = findProject(state, context.organization.id, input.projectId);
+    const exportRecord = state.exports.find(
+      (item) => item.id === input.exportId && item.projectId === project.id,
+    );
+    if (!exportRecord) throw new Error("Full project export not found for this project.");
+    const job =
+      state.processingJobs.find((item) => item.id === input.jobId && item.projectId === project.id) ||
+      state.processingJobs.find(
+        (item) => item.projectId === project.id && item.metadata?.exportId === exportRecord.id,
+      );
+    if (!job) throw new Error("Full project export job not found.");
+    const receipt = state.dataOperationReceipts.find(
+      (item) => item.id === exportRecord.receiptId || item.exportId === exportRecord.id,
+    );
+    if (!receipt) throw new Error("Full project export receipt not found.");
+    if (exportRecord.status === "generated" && job.status === "completed" && receipt.status === "completed") {
+      return { exportRecord, job, receipt };
+    }
+
+    const now = new Date().toISOString();
+    exportRecord.status = "running";
+    job.status = "running";
+    job.startedAt = job.startedAt || now;
+    receipt.status = "running";
+    const workspaceState = selectWorkspace(
+      state,
+      context.organization.id,
+      project.id,
+      context.user,
+      context.organization,
+      context.membership,
+    );
+    const content = encodeFullProjectExportPackage(
+      buildFullProjectExportPackage(workspaceState, {
+        exportId: exportRecord.id,
+        requestedBy: actor.userId,
+        generatedAt: now,
+      }),
+    );
+    const checksum = checksumContent(content);
+    await writeFile(join(this.rootDir, "exports", exportRecord.id), content, "utf8");
+    exportRecord.status = "generated";
+    exportRecord.sizeBytes = Buffer.byteLength(content);
+    exportRecord.checksum = checksum;
+    exportRecord.completedAt = now;
+    exportRecord.metadata = {
+      ...(exportRecord.metadata || {}),
+      checksum,
+      recordCounts: {
+        traces: workspaceState.traces.length,
+        evalCases: workspaceState.evalCases.length,
+        graders: workspaceState.graders.length,
+        reports: workspaceState.reports.length,
+      },
+    };
+    job.status = "completed";
+    job.completedAt = now;
+    job.metadata = { ...(job.metadata || {}), checksum, sizeBytes: exportRecord.sizeBytes };
+    receipt.status = "completed";
+    receipt.completedAt = now;
+    receipt.summary = `Full project export generated for ${project.name}.`;
+    receipt.metadata = {
+      ...receipt.metadata,
+      checksum,
+      sizeBytes: exportRecord.sizeBytes,
+      fileName: exportRecord.fileName,
+    };
+    state.auditEvents.push(
+      audit(actor, project.organizationId, "export", exportRecord.id, "project_export.completed", {
+        projectId: project.id,
+        checksum,
+        sizeBytes: exportRecord.sizeBytes,
+        receiptId: receipt.id,
+      }),
+    );
+    await this.save(state);
+    return { exportRecord, job, receipt };
+    });
+  }
+
+  async requestProjectDeletion(actor: ActorContext, projectId: string, input: DeleteProjectInput) {
+    return this.withWriteLock(async () => {
+    const state = await this.load();
+    const context = requireMembership(state, actor);
+    const project = findProject(state, context.organization.id, projectId);
+    if (input.confirmationName.trim() !== project.name) {
+      throw new ApiError(400, "Type the project name exactly to confirm deletion.", "confirmation_mismatch");
+    }
+    const now = new Date().toISOString();
+    const job: ProcessingJob = {
+      id: makeId("job"),
+      organizationId: project.organizationId,
+      projectId: project.id,
+      action: "project_delete",
+      status: "queued",
+      metadata: { projectName: project.name },
+      createdAt: now,
+    };
+    const receipt = createReceipt({
+      id: makeId("receipt"),
+      organizationId: project.organizationId,
+      projectId: project.id,
+      operation: "project_delete",
+      status: "requested",
+      actorUserId: actor.userId,
+      summary: `Project deletion requested for ${project.name}.`,
+      metadata: { projectName: project.name },
+      jobId: job.id,
+      createdAt: now,
+    });
+    state.processingJobs.unshift(job);
+    state.dataOperationReceipts.unshift(receipt);
+    state.auditEvents.push(
+      audit(actor, project.organizationId, "project", project.id, "project_delete.requested", {
+        projectName: project.name,
+        receiptId: receipt.id,
+      }),
+    );
+    await this.save(state);
+    return { job, receipt };
+    });
+  }
+
+  async processProjectDeletion(actor: ActorContext, input: ProcessProjectDeletionInput) {
+    return this.withWriteLock(async () => {
+    const state = await this.load();
+    const context = requireMembership(state, actor);
+    const project = findProject(state, context.organization.id, input.projectId);
+    const job = state.processingJobs.find((item) => item.id === input.jobId && item.projectId === project.id);
+    if (!job) throw new Error("Project deletion job not found.");
+    const receipt = state.dataOperationReceipts.find(
+      (item) => item.id === input.receiptId && item.projectId === project.id,
+    );
+    if (!receipt) throw new Error("Project deletion receipt not found.");
+    const now = new Date().toISOString();
+    job.status = "running";
+    job.startedAt = job.startedAt || now;
+    receipt.status = "running";
+    const deletedCounts = countProjectRecords(state, project.id);
+    const uploadedFiles = state.uploadedFiles.filter((item) => item.projectId === project.id);
+    const exports = state.exports.filter((item) => item.projectId === project.id);
+    await Promise.all([
+      ...uploadedFiles.map((file) => rm(join(this.rootDir, "uploads", file.checksum), { force: true })),
+      ...exports.map((record) => rm(join(this.rootDir, "exports", record.id), { force: true })),
+    ]);
+    removeProjectRecords(state, project.id);
+    job.status = "completed";
+    job.completedAt = now;
+    receipt.status = "completed";
+    receipt.completedAt = now;
+    receipt.summary = `Project ${project.name} and associated storage objects were deleted.`;
+    receipt.metadata = {
+      ...receipt.metadata,
+      deletedCounts,
+      storageObjectsDeleted: uploadedFiles.length + exports.length,
+      completedAt: now,
+    };
+    state.auditEvents.push(
+      audit(actor, project.organizationId, "project", project.id, "project_delete.completed", {
+        projectName: project.name,
+        deletedCounts,
+        storageObjectsDeleted: uploadedFiles.length + exports.length,
+        receiptId: receipt.id,
+      }),
+    );
+    await this.save(state);
+    return { receipt };
+    });
+  }
+
+  async purgeRawProjectData(actor: ActorContext, input: PurgeRawProjectDataInput) {
+    return this.withWriteLock(async () => {
+    const state = await this.load();
+    const context = requireMembership(state, actor);
+    findProject(state, context.organization.id, input.projectId);
+    const receipt = await purgeRawProjectDataInState(state, this.rootDir, actor, input);
+    await this.save(state);
+    return receipt;
+    });
   }
 
   async rerunEvaluation(actor: ActorContext, projectId: string) {
@@ -789,6 +1077,10 @@ function selectWorkspace(
     cacheRecommendations: byProject(state.cacheRecommendations),
     reports: byProject(state.reports),
     exports: byProject(state.exports),
+    dataOperationReceipts: state.dataOperationReceipts
+      .filter((item) => item.organizationId === organizationId)
+      .slice()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     auditEvents: state.auditEvents
       .filter((item) => item.organizationId === organizationId)
       .slice()
@@ -802,6 +1094,114 @@ function findProject(state: LocalState, organizationId: string, projectId: strin
   );
   if (!project) throw new Error("Project not found for this organization.");
   return project;
+}
+
+async function purgeRawProjectDataInState(
+  state: LocalState,
+  rootDir: string,
+  actor: ActorContext,
+  input: PurgeRawProjectDataInput,
+) {
+  const now = input.now || new Date().toISOString();
+  const project = state.projects.find((item) => item.id === input.projectId);
+  if (!project) throw new Error("Project not found for this organization.");
+  const matchesTraceImport = (traceImportId?: string) =>
+    !input.traceImportId || traceImportId === input.traceImportId;
+  const files = state.uploadedFiles.filter(
+    (file) => file.projectId === input.projectId && matchesTraceImport(file.traceImportId) && !file.rawPurgedAt,
+  );
+  const traces = state.traces.filter(
+    (trace) => trace.projectId === input.projectId && matchesTraceImport(trace.traceImportId) && !trace.rawPurgedAt,
+  );
+  const imports = state.traceImports.filter((traceImport) =>
+    files.some((file) => file.traceImportId === traceImport.id) ||
+    traces.some((trace) => trace.traceImportId === traceImport.id),
+  );
+
+  await Promise.all(files.map((file) => rm(join(rootDir, "uploads", file.checksum), { force: true })));
+  files.forEach((file) => {
+    file.rawPurgedAt = now;
+    file.storageDeletedAt = now;
+  });
+  traces.forEach((trace) => {
+    trace.input = null;
+    trace.output = null;
+    trace.metadata = null;
+    trace.rawPurgedAt = now;
+  });
+  imports.forEach((traceImport) => {
+    traceImport.rawPurgedAt = now;
+  });
+
+  const receipt = createReceipt({
+    id: makeId("receipt"),
+    organizationId: project.organizationId,
+    projectId: project.id,
+    operation: "raw_trace_purge",
+    status: "completed",
+    actorUserId: actor.userId,
+    summary: `Raw trace data purged for ${project.name}.`,
+    metadata: {
+      reason: input.reason,
+      traceImportId: input.traceImportId,
+      filesPurged: files.length,
+      tracesPurged: traces.length,
+    },
+    createdAt: now,
+    completedAt: now,
+  });
+  state.dataOperationReceipts.unshift(receipt);
+  state.auditEvents.push(
+    audit(actor, project.organizationId, "project", project.id, "raw_trace_purge.completed", {
+      reason: input.reason,
+      traceImportId: input.traceImportId,
+      filesPurged: files.length,
+      tracesPurged: traces.length,
+      receiptId: receipt.id,
+    }),
+  );
+  return receipt;
+}
+
+function countProjectRecords(state: LocalState, projectId: string) {
+  return {
+    traceImports: state.traceImports.filter((item) =>
+      state.uploadedFiles.some((file) => file.projectId === projectId && file.traceImportId === item.id),
+    ).length,
+    traces: state.traces.filter((item) => item.projectId === projectId).length,
+    uploadedFiles: state.uploadedFiles.filter((item) => item.projectId === projectId).length,
+    processingJobs: state.processingJobs.filter((item) => item.projectId === projectId).length,
+    evalCases: state.evalCases.filter((item) => item.projectId === projectId).length,
+    graders: state.graders.filter((item) => item.projectId === projectId).length,
+    issues: state.issues.filter((item) => item.projectId === projectId).length,
+    reports: state.reports.filter((item) => item.projectId === projectId).length,
+    exports: state.exports.filter((item) => item.projectId === projectId).length,
+  };
+}
+
+function removeProjectRecords(state: LocalState, projectId: string) {
+  const issueIds = new Set(state.issues.filter((item) => item.projectId === projectId).map((item) => item.id));
+  state.projects = state.projects.filter((item) => item.id !== projectId);
+  state.traceImports = state.traceImports.filter((item) =>
+    !state.uploadedFiles.some((file) => file.projectId === projectId && file.traceImportId === item.id),
+  );
+  state.traces = state.traces.filter((item) => item.projectId !== projectId);
+  state.uploadedFiles = state.uploadedFiles.filter((item) => item.projectId !== projectId);
+  state.processingJobs = state.processingJobs.filter((item) => item.projectId !== projectId);
+  state.evalCases = state.evalCases.filter((item) => item.projectId !== projectId);
+  state.graders = state.graders.filter((item) => item.projectId !== projectId);
+  state.issues = state.issues.filter((item) => item.projectId !== projectId);
+  state.issueComments = state.issueComments.filter(
+    (item) => item.projectId !== projectId && !issueIds.has(item.issueId),
+  );
+  state.evalRuns = state.evalRuns.filter((item) => item.projectId !== projectId);
+  state.failureClusters = state.failureClusters.filter((item) => item.projectId !== projectId);
+  state.promptVersions = state.promptVersions.filter((item) => item.projectId !== projectId);
+  state.promptCandidates = state.promptCandidates.filter((item) => item.projectId !== projectId);
+  state.routingRules = state.routingRules.filter((item) => item.projectId !== projectId);
+  state.cacheRecommendations = state.cacheRecommendations.filter((item) => item.projectId !== projectId);
+  state.reports = state.reports.filter((item) => item.projectId !== projectId);
+  state.exports = state.exports.filter((item) => item.projectId !== projectId);
 }
 
 async function buildAuditReportPdfOrThrow(state: WorkspaceState) {

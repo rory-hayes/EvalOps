@@ -14,6 +14,7 @@
 10. The user can generate and download a CSV eval pack or PDF audit report.
 11. Dashboard, grader, prompt, routing, report, settings, and audit views read backend state.
 12. Milestone 3 adds public liveness, token-protected readiness, structured server logs, CI, and a live vendor smoke script.
+13. Milestone 4 adds raw-data retention controls, full project JSON export, receipt-backed project deletion, storage cleanup, data inventory, and direct-client RLS tightening.
 
 ## Supabase
 
@@ -22,7 +23,22 @@
 - Auth: Supabase `auth.users` is the identity source; tenant access is derived from `auth.uid()` and `organization_memberships`.
 - Email confirmations: disabled for the private MVP; signup returns an active Supabase session.
 - Storage: `evalops-trace-uploads` and `evalops-exports` buckets are private and organization-prefixed.
+- Storage deletion: remove uploaded files and generated exports through the Supabase Storage API, not direct SQL against storage tables.
 - Server code uses `SUPABASE_SECRET_KEY` or `SUPABASE_SERVICE_ROLE_KEY`; these must never use `NEXT_PUBLIC_`.
+
+Supabase Auth dashboard hardening before broader rollout:
+
+References: [password security](https://supabase.com/docs/guides/auth/password-security), [sessions](https://supabase.com/docs/guides/auth/sessions), [MFA](https://supabase.com/docs/guides/auth/auth-mfa), and [Storage object deletion](https://supabase.com/docs/guides/storage/management/delete-objects).
+
+1. Enable leaked-password protection.
+2. Require MFA/TOTP for admin/operator accounts.
+3. Set password minimum length to 8+ characters with complexity requirements.
+4. Enable secure password change / reauthentication controls where available.
+5. Keep invite-only or private signup policy for the private MVP.
+6. Require email confirmations before any broader customer rollout.
+7. Configure production SMTP instead of default shared email delivery.
+8. Add captcha if self-serve signup opens.
+9. Set session timebox and inactivity limits appropriate for customer data access.
 
 ## Supabase Remote Status
 
@@ -75,6 +91,15 @@ Set the same required app envs for Preview and Production. `EVALOPS_TEST_MODE` s
 - `GET /api/readiness`: token-protected readiness endpoint. Call with `Authorization: Bearer $EVALOPS_SMOKE_TOKEN`; it checks production env presence, Supabase service-role Postgres access, and the `evalops-trace-uploads` / `evalops-exports` private buckets.
 - Inngest endpoint: `https://<deployment>/api/inngest`; expected function: `process-trace-import`.
 
+## Milestone 4 Privacy and Data Operations
+
+- Raw retention: project settings expose retention-aware controls, and backend privacy operations can purge retained raw uploads while preserving derived audit artifacts and operation receipts.
+- Full export: `POST /api/projects/:projectId/exports` with `{ "type": "full_project_json" }` creates a customer-owned JSON package with a manifest, data inventory, project records, storage references, and external processor notes. Download through `GET /api/exports/:exportId/download`.
+- Delete receipts: `DELETE /api/projects/:projectId` requires the exact `{ "confirmationName": "<project name>" }` and returns a completed `project_delete` receipt when finished. Receipts remain organization-level evidence after project records are removed.
+- Storage cleanup: project deletion removes trace-upload and export objects via the Supabase Storage API. Do not delete Storage objects by writing SQL against Supabase-managed storage tables.
+- Data inventory: full exports and privacy operations report raw uploads, derived records, generated exports, receipts, and storage references so customer data handling is reviewable.
+- Direct-client RLS tightening: browser/client Supabase access is expected to see only tenant-authorized project data, trace imports, and storage objects; service-role code remains server-only.
+
 ## CI and Smoke
 
 GitHub Actions:
@@ -109,7 +134,9 @@ The smoke creates non-sensitive, uniquely named smoke data and verifies:
 - job metadata records OpenAI generation with a response id;
 - generated cases, graders, report, and PDF export exist;
 - duplicate upload protection returns `409 duplicate_upload`;
-- Supabase RLS and private Storage isolate smoke user A from smoke user B.
+- full project JSON export downloads with matching manifest, data inventory, and eval records;
+- Supabase RLS and private Storage isolate smoke user A from smoke user B;
+- project deletion removes the smoke project from app state and leaves a completed `project_delete` receipt.
 
 ## Latest Local Audit
 
@@ -124,7 +151,9 @@ The smoke creates non-sensitive, uniquely named smoke data and verifies:
 - Inngest is the production async path; explicit test mode processes the queued job inline for deterministic CI and local E2E.
 - Test mode exists only behind `EVALOPS_TEST_MODE=1`; production mode requires real Supabase Auth, Supabase server credentials, OpenAI credentials, and Inngest credentials.
 - Remote production smoke testing should be repeated after Vercel env vars are confirmed and Inngest/OpenAI are live.
-- Full project export and destructive project deletion remain gated until they run through audited background jobs with confirmation receipts.
+- Third-party trace source integrations, enterprise SSO/SAML, billing, and a production-grade eval execution engine remain out of Milestone 4 scope.
+- Full export and project deletion are available through audited API paths, but customer-facing copy and operator runbooks should still be reviewed before broad rollout.
+- Raw retention enforcement depends on scheduled/operator invocation until a recurring purge job is configured and monitored.
 
 ## Production Cutover Checklist
 

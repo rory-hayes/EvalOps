@@ -100,8 +100,43 @@ async function main() {
   const pdfBytes = new Uint8Array(await pdfResponse.arrayBuffer());
   assert(Buffer.from(pdfBytes.slice(0, 5)).toString("utf8") === "%PDF-", "PDF download did not start with %PDF-.");
 
+  step("Generating and downloading a full project JSON export");
+  const fullExportResponse = await appFetch(baseUrl, `/api/projects/${project.id}/exports`, {
+    method: "POST",
+    cookie: ownerCookie,
+    json: { type: "full_project_json" },
+  });
+  assert(fullExportResponse.response.ok, `Full project JSON export failed: ${JSON.stringify(fullExportResponse.body)}`);
+  const fullExportId = fullExportResponse.body.data?.id;
+  assert(fullExportId, "Full project JSON export response did not include an export id.");
+  await pollFullProjectExport(baseUrl, ownerCookie, project.id, fullExportId);
+  const fullExportDownload = await fetch(`${baseUrl}/api/exports/${fullExportId}/download`, {
+    headers: {
+      cookie: ownerCookie,
+    },
+  });
+  assert(fullExportDownload.ok, `Full project JSON download failed with ${fullExportDownload.status}.`);
+  const fullProjectPackage = await fullExportDownload.json();
+  assert(fullProjectPackage.manifest?.projectId === project.id, "Full export manifest did not match the smoke project id.");
+  assert(fullProjectPackage.dataInventory?.rawUploads?.count === 1, "Full export raw upload inventory did not report one upload.");
+  assert(
+    fullProjectPackage.records?.evalCases?.length === state.evalCases.length,
+    "Full export eval case records did not match generated project state.",
+  );
+
   step("Verifying live Supabase RLS and storage isolation");
   await verifyRls({ owner, outsider, projectId: project.id, state });
+
+  step("Deleting the smoke project and verifying the deletion receipt");
+  const deleteResponse = await appFetch(baseUrl, `/api/projects/${project.id}`, {
+    method: "DELETE",
+    cookie: ownerCookie,
+    json: { confirmationName: project.name },
+  });
+  assert(deleteResponse.response.ok, `Project deletion failed: ${JSON.stringify(deleteResponse.body)}`);
+  assert(deleteResponse.body.data?.operation === "project_delete", "Project deletion did not return a project_delete receipt.");
+  assert(deleteResponse.body.data?.id, "Project deletion response did not include a receipt id.");
+  await pollProjectDeleted(baseUrl, ownerCookie, project.id, deleteResponse.body.data.id);
 
   step(`Production smoke passed for project ${project.id}`);
 }
@@ -202,6 +237,50 @@ async function pollProjectState(baseUrl, cookie, projectId, traceImportId, jobId
     await sleep(POLL_INTERVAL_MS);
   }
   throw new Error(`Timed out waiting for processing to complete. Last state: ${JSON.stringify(lastState)}`);
+}
+
+async function pollFullProjectExport(baseUrl, cookie, projectId, exportId) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
+    const stateResponse = await appFetch(baseUrl, `/api/app-state?projectId=${encodeURIComponent(projectId)}`, {
+      cookie,
+    });
+    assert(stateResponse.response.ok, `Full export app state request failed: ${JSON.stringify(stateResponse.body)}`);
+    lastState = stateResponse.body.data;
+    const exportRecord = lastState.exports.find((item) => item.id === exportId);
+    const receipt = lastState.dataOperationReceipts.find((item) => item.exportId === exportId);
+    if (exportRecord?.status === "generated" && receipt?.status === "completed") {
+      return { state: lastState, exportRecord, receipt };
+    }
+    if (exportRecord?.status === "failed" || receipt?.status === "failed") {
+      throw new Error(`Full project export failed: ${receipt?.summary || "unknown export error"}`);
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+  throw new Error(`Timed out waiting for full project export. Last state: ${JSON.stringify(lastState)}`);
+}
+
+async function pollProjectDeleted(baseUrl, cookie, projectId, receiptId) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
+    const stateResponse = await appFetch(baseUrl, "/api/app-state", {
+      cookie,
+    });
+    assert(stateResponse.response.ok, `Post-delete app state request failed: ${JSON.stringify(stateResponse.body)}`);
+    lastState = stateResponse.body.data;
+    const projectDeleted = !lastState.projects.some((item) => item.id === projectId);
+    const receipt = lastState.dataOperationReceipts.find((item) => item.id === receiptId);
+    if (projectDeleted && receipt?.operation === "project_delete" && receipt.status === "completed" && receipt.projectId === projectId) {
+      return { state: lastState, receipt };
+    }
+    if (receipt?.status === "failed") {
+      throw new Error(`Project deletion failed after enqueue: ${receipt.summary || "unknown deletion error"}`);
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+  throw new Error(`Timed out waiting for project deletion. Last state: ${JSON.stringify(lastState)}`);
 }
 
 async function verifyRls({ owner, outsider, projectId, state }) {

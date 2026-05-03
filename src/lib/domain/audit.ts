@@ -48,6 +48,8 @@ export const traceImportSchema = z.object({
   redactionStatus: z.enum(["in_progress", "redacted", "pending", "failed"]),
   primaryIntent: z.string().min(1),
   riskLevel: riskLevelSchema,
+  rawRetentionExpiresAt: z.string().datetime().nullable().optional(),
+  rawPurgedAt: z.string().datetime().nullable().optional(),
 });
 
 export const evalCaseSchema = z.object({

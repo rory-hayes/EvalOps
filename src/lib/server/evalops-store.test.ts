@@ -213,4 +213,197 @@ describe("local evalops store", () => {
       }),
     ).rejects.toThrow(/state file is unreadable/i);
   });
+
+  it("purges raw uploaded content and raw trace fields for derived-only projects", async () => {
+    const store = await createStore();
+    const actor = {
+      userId: "user_1",
+      email: "founder@example.com",
+      organizationId: "org_1",
+    };
+
+    await store.ensureWorkspace(actor);
+    const project = await store.createProject(actor, {
+      name: "Derived Only Audit",
+      workflowType: "support_assistant",
+      objective: "Verify raw customer traces are not retained after derived artifacts are created.",
+      riskPreferences: ["Privacy"],
+      privacyMode: "derived_only",
+    });
+    const queued = await store.createTraceImport(actor, {
+      projectId: project.id,
+      fileName: "privacy.csv",
+      contentType: "text/csv",
+      text:
+        "conversation_id,user_input,assistant_output\n" +
+        "c_1,My email is jane@example.com and I need this deleted,We can start a privacy request.",
+    });
+
+    await store.processTraceImport(actor, {
+      projectId: project.id,
+      traceImportId: queued.importRecord.id,
+      jobId: queued.job.id,
+    });
+
+    const state = await store.getProjectState(actor, project.id);
+    expect(state.traces).toHaveLength(1);
+    expect(state.traces[0].input).toBeNull();
+    expect(state.traces[0].output).toBeNull();
+    expect(state.traces[0].metadata).toBeNull();
+    expect(state.uploadedFiles[0].rawPurgedAt).toBeTruthy();
+    expect(state.uploadedFiles[0].storageDeletedAt).toBeTruthy();
+    expect(state.evalCases[0].userInput).toContain("[email]");
+    expect(state.dataOperationReceipts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: "raw_trace_purge",
+          status: "completed",
+          projectId: project.id,
+        }),
+      ]),
+    );
+  });
+
+  it("purges retained raw content when an existing project switches to derived-only", async () => {
+    const store = await createStore();
+    const actor = {
+      userId: "user_1",
+      email: "founder@example.com",
+      organizationId: "org_1",
+    };
+
+    await store.ensureWorkspace(actor);
+    const project = await store.createProject(actor, {
+      name: "Retention Change Audit",
+      workflowType: "support_assistant",
+      objective: "Verify existing raw traces are purged when privacy posture changes.",
+      riskPreferences: ["Privacy"],
+      privacyMode: "redact_pii",
+    });
+    const queued = await store.createTraceImport(actor, {
+      projectId: project.id,
+      fileName: "retention.csv",
+      contentType: "text/csv",
+      text:
+        "conversation_id,user_input,assistant_output\n" +
+        "c_1,Please remove my email jane@example.com,We can help with deletion.",
+    });
+    await store.processTraceImport(actor, {
+      projectId: project.id,
+      traceImportId: queued.importRecord.id,
+      jobId: queued.job.id,
+    });
+
+    const retained = await store.getProjectState(actor, project.id);
+    expect(retained.traces[0].input).toContain("jane@example.com");
+
+    await store.updateProjectSettings(actor, project.id, { privacyMode: "derived_only" });
+    const purged = await store.getProjectState(actor, project.id);
+
+    expect(purged.activeProject?.privacyMode).toBe("derived_only");
+    expect(purged.traces[0].input).toBeNull();
+    expect(purged.traces[0].rawPurgedAt).toBeTruthy();
+    expect(purged.uploadedFiles[0].storageDeletedAt).toBeTruthy();
+    expect(purged.dataOperationReceipts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: "raw_trace_purge",
+          status: "completed",
+          projectId: project.id,
+        }),
+      ]),
+    );
+  });
+
+  it("generates a full project export package and receipt", async () => {
+    const store = await createStore();
+    const actor = {
+      userId: "user_1",
+      email: "founder@example.com",
+      organizationId: "org_1",
+    };
+
+    await store.ensureWorkspace(actor);
+    const project = await store.createProject(actor, {
+      name: "Full Export Audit",
+      workflowType: "support_assistant",
+      objective: "Verify full project exports include data inventory and receipts.",
+      riskPreferences: ["Escalation"],
+      privacyMode: "redact_pii",
+    });
+    const queued = await store.createTraceImport(actor, {
+      projectId: project.id,
+      fileName: "export.csv",
+      contentType: "text/csv",
+      text:
+        "conversation_id,user_input,assistant_output\n" +
+        "c_1,I asked three times and this is still not fixed,Try restarting the app.",
+    });
+    await store.processTraceImport(actor, {
+      projectId: project.id,
+      traceImportId: queued.importRecord.id,
+      jobId: queued.job.id,
+    });
+
+    const requested = await store.requestFullProjectExport(actor, project.id);
+    const generated = await store.processFullProjectExport(actor, {
+      projectId: project.id,
+      exportId: requested.exportRecord.id,
+      jobId: requested.job.id,
+    });
+    const download = await store.getExport(actor, generated.exportRecord.id);
+    const payload = JSON.parse(String(download.content));
+
+    expect(generated.exportRecord.type).toBe("full_project_json");
+    expect(generated.exportRecord.status).toBe("generated");
+    expect(generated.receipt.status).toBe("completed");
+    expect(payload.manifest.projectId).toBe(project.id);
+    expect(payload.dataInventory.rawUploads.count).toBe(1);
+    expect(payload.records.evalCases).toHaveLength(1);
+  });
+
+  it("deletes a project after typed confirmation and preserves a deletion receipt", async () => {
+    const store = await createStore();
+    const actor = {
+      userId: "user_1",
+      email: "founder@example.com",
+      organizationId: "org_1",
+    };
+
+    await store.ensureWorkspace(actor);
+    const project = await store.createProject(actor, {
+      name: "Delete Me Audit",
+      workflowType: "support_assistant",
+      objective: "Verify destructive project deletion is confirmed and receipt-backed.",
+      riskPreferences: ["Privacy"],
+      privacyMode: "redact_pii",
+    });
+
+    await expect(
+      store.requestProjectDeletion(actor, project.id, { confirmationName: "wrong name" }),
+    ).rejects.toThrow(/project name/i);
+
+    const requested = await store.requestProjectDeletion(actor, project.id, {
+      confirmationName: project.name,
+    });
+    const deleted = await store.processProjectDeletion(actor, {
+      projectId: project.id,
+      jobId: requested.job.id,
+      receiptId: requested.receipt.id,
+    });
+    const state = await store.getWorkspaceState(actor);
+
+    expect(deleted.receipt.status).toBe("completed");
+    expect(state.projects).toHaveLength(0);
+    expect(state.dataOperationReceipts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: requested.receipt.id,
+          operation: "project_delete",
+          status: "completed",
+          projectId: project.id,
+        }),
+      ]),
+    );
+  });
 });
