@@ -32,8 +32,21 @@ export const updateGraderRequestSchema = z.object({
   active: z.boolean().optional(),
   model: z.union([z.string().trim().min(1).max(80), z.literal(""), z.null()]).optional()
     .transform((value) => (value === "" ? null : value)),
-}).refine((input) => input.description !== undefined || input.active !== undefined || input.model !== undefined, {
+  passThreshold: z.number().min(0).max(1).optional(),
+  reviewThreshold: z.number().min(0).max(1).optional(),
+  rubric: z.string().trim().min(10).max(4000).optional(),
+  failureModes: z.array(z.string().trim().min(1).max(160)).max(12).optional(),
+}).refine((input) => input.description !== undefined || input.active !== undefined || input.model !== undefined || input.passThreshold !== undefined || input.reviewThreshold !== undefined || input.rubric !== undefined || input.failureModes !== undefined, {
   message: "At least one grader setting must be provided.",
+}).refine((input) => input.passThreshold === undefined || input.reviewThreshold === undefined || input.passThreshold >= input.reviewThreshold, {
+  message: "Pass threshold must be greater than or equal to review threshold.",
+});
+
+export const upsertHumanLabelRequestSchema = z.object({
+  graderId: z.string().min(1),
+  score: z.number().min(0).max(100),
+  status: z.enum(["passed", "failed", "review"]),
+  notes: z.string().trim().max(2000).optional(),
 });
 
 export const promotePromptRequestSchema = z.object({

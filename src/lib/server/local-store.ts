@@ -8,6 +8,7 @@ import {
   type NormalizedTrace,
   parseTraceFile,
 } from "../domain/trace-processing";
+import { executeDeterministicGrader, summarizeEvalResults } from "../domain/eval-execution";
 import { generateAuditArtifacts, type AuditArtifacts } from "@/lib/ai/openai-audit-generation";
 import { buildAuditReportPdf } from "./audit-report-pdf";
 import { ApiError } from "./auth";
@@ -31,6 +32,9 @@ import type {
   EvalRun,
   ExportRecord,
   FailureCluster,
+  GraderCalibrationRun,
+  StoredGraderCalibrationResult,
+  StoredHumanLabel,
   IssueComment,
   Organization,
   OrganizationMembership,
@@ -45,9 +49,11 @@ import type {
   Report,
   RoutingRule,
   StoredEvalCase,
+  StoredEvalResult,
   StoredGrader,
   StoredIssue,
   UpdateGraderInput,
+  UpsertHumanLabelInput,
   UpdateProjectSettingsInput,
   StoredTrace,
   UploadedFile,
@@ -69,6 +75,10 @@ type LocalState = {
   issues: StoredIssue[];
   issueComments: IssueComment[];
   evalRuns: EvalRun[];
+  evalResults: StoredEvalResult[];
+  humanLabels: StoredHumanLabel[];
+  graderCalibrationRuns: GraderCalibrationRun[];
+  graderCalibrationResults: StoredGraderCalibrationResult[];
   failureClusters: FailureCluster[];
   promptVersions: PromptVersion[];
   promptCandidates: PromptCandidate[];
@@ -94,6 +104,10 @@ const emptyState = (): LocalState => ({
   issues: [],
   issueComments: [],
   evalRuns: [],
+  evalResults: [],
+  humanLabels: [],
+  graderCalibrationRuns: [],
+  graderCalibrationResults: [],
   failureClusters: [],
   promptVersions: [],
   promptCandidates: [],
@@ -529,6 +543,10 @@ class LocalEvalOpsStore implements EvalOpsStore {
     if (input.description !== undefined) grader.description = input.description.trim();
     if (input.active !== undefined) grader.active = input.active;
     if (input.model !== undefined) grader.model = input.model?.trim() || undefined;
+    if (input.passThreshold !== undefined) grader.passThreshold = input.passThreshold;
+    if (input.reviewThreshold !== undefined) grader.reviewThreshold = input.reviewThreshold;
+    if (input.rubric !== undefined) grader.rubric = input.rubric.trim();
+    if (input.failureModes !== undefined) grader.failureModes = normalizeList(input.failureModes);
     grader.updatedAt = new Date().toISOString();
     state.auditEvents.push(
       audit(actor, grader.organizationId, "grader", grader.id, "grader.updated", {
@@ -888,30 +906,122 @@ class LocalEvalOpsStore implements EvalOpsStore {
     const context = requireMembership(state, actor);
     const project = findProject(state, context.organization.id, projectId);
     const evalCases = state.evalCases.filter((item) => item.projectId === project.id);
-    const failedCases = evalCases.filter((item) => item.status === "failed").length;
-    const passRate = evalCases.length
-      ? Math.round(((evalCases.length - failedCases) / evalCases.length) * 1000) / 10
-      : 0;
+    const activeGraders = state.graders.filter((item) => item.projectId === project.id && item.active);
+    const currentPrompt = state.promptVersions.find((item) => item.projectId === project.id && item.status === "current") ||
+      state.promptVersions.find((item) => item.projectId === project.id);
+    const now = new Date().toISOString();
     const run: EvalRun = {
       id: makeId("run"),
       organizationId: project.organizationId,
       projectId: project.id,
-      status: "completed",
-      passRate,
+      status: "running",
+      runType: "manual",
+      promptVersionId: currentPrompt?.id,
+      passRate: 0,
       totalCases: evalCases.length,
-      failedCases,
-      startedAt: new Date().toISOString(),
-      completedAt: new Date().toISOString(),
+      failedCases: 0,
+      reviewCases: 0,
+      totalResults: 0,
+      startedAt: now,
     };
+    const results = evalCases.flatMap((evalCase) =>
+      activeGraders.map((grader) =>
+        executeDeterministicGrader({
+          evalCase,
+          grader,
+          trace: evalCase.traceId ? state.traces.find((trace) => trace.id === evalCase.traceId) : undefined,
+          evalRunId: run.id,
+          promptVersionId: currentPrompt?.id,
+          now,
+        }),
+      ),
+    ).map((result) => ({
+      ...result,
+      organizationId: project.organizationId,
+      projectId: project.id,
+    }));
+    const summary = summarizeEvalResults(results);
+    run.status = "completed";
+    run.passRate = summary.passRate;
+    run.averageScore = summary.averageScore;
+    run.failedCases = summary.failedCases;
+    run.reviewCases = summary.reviewCases;
+    run.totalResults = results.length;
+    run.completedAt = new Date().toISOString();
     state.evalRuns.unshift(run);
+    state.evalResults = [
+      ...results,
+      ...state.evalResults.filter((item) => item.projectId !== project.id || item.evalRunId !== run.id),
+    ];
+    evalCases.forEach((evalCase) => {
+      const caseResults = results.filter((result) => result.evalCaseId === evalCase.id);
+      const score = caseResults.length
+        ? Math.round(caseResults.reduce((total, result) => total + result.score, 0) / caseResults.length)
+        : evalCase.lastResult;
+      evalCase.lastResult = score;
+      evalCase.status = caseResults.some((result) => result.status === "failed")
+        ? "failed"
+        : caseResults.some((result) => result.status === "review")
+          ? "review"
+          : "passed";
+      evalCase.updatedAt = run.completedAt || now;
+    });
     state.auditEvents.push(
       audit(actor, project.organizationId, "eval_run", run.id, "review_rule.executed", {
         totalCases: run.totalCases,
+        totalResults: run.totalResults,
         failedCases: run.failedCases,
+        passRate: run.passRate,
       }),
     );
     await this.save(state);
     return run;
+    });
+  }
+
+  async upsertHumanLabel(actor: ActorContext, input: UpsertHumanLabelInput) {
+    return this.withWriteLock(async () => {
+    const state = await this.load();
+    const context = requireMembership(state, actor);
+    const evalCase = state.evalCases.find(
+      (item) => item.id === input.evalCaseId && item.organizationId === context.organization.id,
+    );
+    if (!evalCase) throw new Error("Eval case not found for this organization.");
+    const grader = state.graders.find(
+      (item) => item.id === input.graderId && item.projectId === evalCase.projectId,
+    );
+    if (!grader) throw new Error("Grader not found for this eval case.");
+    const now = new Date().toISOString();
+    const existing = state.humanLabels.find(
+      (item) => item.evalCaseId === evalCase.id && item.graderId === grader.id,
+    );
+    const label: StoredHumanLabel = {
+      id: existing?.id || makeId("label"),
+      organizationId: evalCase.organizationId,
+      projectId: evalCase.projectId,
+      evalCaseId: evalCase.id,
+      graderId: grader.id,
+      score: input.score,
+      status: input.status,
+      notes: input.notes?.trim() || undefined,
+      labeledBy: actor.userId,
+      labeledAt: existing?.labeledAt || now,
+      updatedAt: now,
+    };
+    state.humanLabels = [
+      label,
+      ...state.humanLabels.filter((item) => item.id !== label.id),
+    ];
+    upsertCalibrationForLabel(state, actor, label);
+    state.auditEvents.push(
+      audit(actor, label.organizationId, "human_label", label.id, "human_label.upserted", {
+        evalCaseId: label.evalCaseId,
+        graderId: label.graderId,
+        status: label.status,
+      }),
+    );
+    await this.save(state);
+    return label;
     });
   }
 
@@ -929,7 +1039,7 @@ class LocalEvalOpsStore implements EvalOpsStore {
       organizationId: project.organizationId,
       projectId: project.id,
       label: candidate.title,
-      prompt: candidate.explanation,
+      prompt: candidate.promptBody,
       status: "promoted",
       createdAt: new Date().toISOString(),
     };
@@ -1070,6 +1180,10 @@ function selectWorkspace(
     issues: byProject(state.issues),
     issueComments: byProject(state.issueComments),
     evalRuns: byProject(state.evalRuns),
+    evalResults: byProject(state.evalResults),
+    humanLabels: byProject(state.humanLabels),
+    graderCalibrationRuns: byProject(state.graderCalibrationRuns),
+    graderCalibrationResults: byProject(state.graderCalibrationResults),
     failureClusters: byProject(state.failureClusters),
     promptVersions: byProject(state.promptVersions),
     promptCandidates: byProject(state.promptCandidates),
@@ -1173,6 +1287,8 @@ function countProjectRecords(state: LocalState, projectId: string) {
     processingJobs: state.processingJobs.filter((item) => item.projectId === projectId).length,
     evalCases: state.evalCases.filter((item) => item.projectId === projectId).length,
     graders: state.graders.filter((item) => item.projectId === projectId).length,
+    evalResults: state.evalResults.filter((item) => item.projectId === projectId).length,
+    humanLabels: state.humanLabels.filter((item) => item.projectId === projectId).length,
     issues: state.issues.filter((item) => item.projectId === projectId).length,
     reports: state.reports.filter((item) => item.projectId === projectId).length,
     exports: state.exports.filter((item) => item.projectId === projectId).length,
@@ -1195,6 +1311,10 @@ function removeProjectRecords(state: LocalState, projectId: string) {
     (item) => item.projectId !== projectId && !issueIds.has(item.issueId),
   );
   state.evalRuns = state.evalRuns.filter((item) => item.projectId !== projectId);
+  state.evalResults = state.evalResults.filter((item) => item.projectId !== projectId);
+  state.humanLabels = state.humanLabels.filter((item) => item.projectId !== projectId);
+  state.graderCalibrationRuns = state.graderCalibrationRuns.filter((item) => item.projectId !== projectId);
+  state.graderCalibrationResults = state.graderCalibrationResults.filter((item) => item.projectId !== projectId);
   state.failureClusters = state.failureClusters.filter((item) => item.projectId !== projectId);
   state.promptVersions = state.promptVersions.filter((item) => item.projectId !== projectId);
   state.promptCandidates = state.promptCandidates.filter((item) => item.projectId !== projectId);
@@ -1245,6 +1365,10 @@ function upsertArtifacts(
         organizationId: project.organizationId,
         projectId: project.id,
         active: true,
+        passThreshold: item.passThreshold ?? 0.8,
+        reviewThreshold: item.reviewThreshold ?? 0.6,
+        rubric: item.rubric || item.description,
+        failureModes: item.failureModes || [],
         createdAt: now,
         updatedAt: now,
       })),
@@ -1381,6 +1505,77 @@ function buildFailureClusters(project: Project, issues: StoredIssue[], now: stri
   }));
 }
 
+function upsertCalibrationForLabel(state: LocalState, actor: ActorContext, label: StoredHumanLabel) {
+  const now = new Date().toISOString();
+  const latestResult = state.evalResults
+    .filter((item) => item.evalCaseId === label.evalCaseId && item.graderId === label.graderId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const scoreDelta = Math.abs((latestResult?.score ?? label.score) - label.score);
+  const severity = latestResult && latestResult.status !== label.status
+    ? "high"
+    : scoreDelta >= 25
+      ? "medium"
+      : scoreDelta >= 10
+        ? "low"
+        : "none";
+  const run: GraderCalibrationRun = {
+    id: makeId("cal"),
+    organizationId: label.organizationId,
+    projectId: label.projectId,
+    graderId: label.graderId,
+    status: severity === "none" ? "completed" : "review",
+    agreement: severity === "none" ? 1 : 0,
+    totalLabels: 1,
+    disagreementCount: severity === "none" ? 0 : 1,
+    createdAt: now,
+  };
+  const result: StoredGraderCalibrationResult = {
+    id: makeId("calres"),
+    organizationId: label.organizationId,
+    projectId: label.projectId,
+    calibrationRunId: run.id,
+    evalCaseId: label.evalCaseId,
+    graderId: label.graderId,
+    humanLabelId: label.id,
+    evalResultId: latestResult?.id,
+    humanScore: label.score,
+    judgeScore: latestResult?.score,
+    scoreDelta,
+    disagreementSeverity: severity,
+    reviewStatus: severity === "none" ? "accepted" : "open",
+    createdAt: now,
+  };
+  state.graderCalibrationRuns.unshift(run);
+  state.graderCalibrationResults = [
+    result,
+    ...state.graderCalibrationResults.filter(
+      (item) => !(item.evalCaseId === label.evalCaseId && item.graderId === label.graderId),
+    ),
+  ];
+  const labelsForGrader = state.humanLabels.filter((item) => item.graderId === label.graderId);
+  const disagreements = state.graderCalibrationResults.filter(
+    (item) => item.graderId === label.graderId && item.disagreementSeverity !== "none",
+  );
+  const agreement = labelsForGrader.length
+    ? Math.max(0, Math.round(((labelsForGrader.length - disagreements.length) / labelsForGrader.length) * 100) / 100)
+    : 1;
+  const grader = state.graders.find((item) => item.id === label.graderId);
+  if (grader) {
+    grader.agreement = agreement;
+    grader.health = agreement >= 0.75 ? "healthy" : "low_agreement";
+    grader.lastCalibratedAt = now;
+    grader.updatedAt = now;
+  }
+  state.auditEvents.push(
+    audit(actor, label.organizationId, "calibration_result", result.id, "grader.calibrated", {
+      evalCaseId: label.evalCaseId,
+      graderId: label.graderId,
+      disagreementSeverity: severity,
+      agreement,
+    }),
+  );
+}
+
 function seedPromptAndOptimization(state: LocalState, actor: ActorContext, project: Project) {
   if (state.promptVersions.some((item) => item.projectId === project.id)) return;
   const now = new Date().toISOString();
@@ -1399,10 +1594,22 @@ function seedPromptAndOptimization(state: LocalState, actor: ActorContext, proje
       organizationId: project.organizationId,
       projectId: project.id,
       title: "Escalation-first support prompt",
+      promptBody: [
+        "You are a support assistant for high-friction customer conversations.",
+        "Detect frustration, repeated failure, refund, privacy, and safety signals.",
+        "Escalate high-risk cases to a human with a concise evidence summary.",
+      ].join("\n"),
+      sourcePromptVersionId: state.promptVersions.find((item) => item.projectId === project.id)?.id,
+      diffSummary: "Adds explicit escalation triggers and evidence handoff format.",
       expectedQualityLift: 12,
       expectedCostDelta: -3,
+      expectedLatencyDeltaMs: -80,
+      baselinePassRate: 72,
+      candidatePassRate: 84,
       regressionRisk: "low",
       explanation: "Adds explicit high-friction detection and human handoff criteria.",
+      confidence: 0.78,
+      evidenceRefs: [],
       createdAt: now,
     },
     {
@@ -1410,10 +1617,22 @@ function seedPromptAndOptimization(state: LocalState, actor: ActorContext, proje
       organizationId: project.organizationId,
       projectId: project.id,
       title: "Billing-safe prompt",
+      promptBody: [
+        "You are a support assistant for billing questions.",
+        "Confirm the account context before refund guidance.",
+        "State what evidence supports the answer and when to escalate.",
+      ].join("\n"),
+      sourcePromptVersionId: state.promptVersions.find((item) => item.projectId === project.id)?.id,
+      diffSummary: "Tightens billing confirmation and escalation instructions.",
       expectedQualityLift: 8,
       expectedCostDelta: 1,
+      expectedLatencyDeltaMs: 120,
+      baselinePassRate: 72,
+      candidatePassRate: 80,
       regressionRisk: "medium",
       explanation: "Tightens refund and invoice language with confirmation steps.",
+      confidence: 0.7,
+      evidenceRefs: [],
       createdAt: now,
     },
   );
@@ -1429,6 +1648,9 @@ function seedPromptAndOptimization(state: LocalState, actor: ActorContext, proje
       estimatedCost: index >= 3 ? 0.028 : 0.012,
       estimatedLatencyMs: index >= 3 ? 2100 : 1200,
       trafficShare: Math.max(5, 35 - index * 6),
+      confidence: index >= 3 ? 0.82 : 0.74,
+      evidenceRefs: [],
+      calculationBasis: "Derived from intent risk, latest eval pass rate, and static pilot traffic assumptions.",
       createdAt: now,
     })),
   );
@@ -1441,6 +1663,9 @@ function seedPromptAndOptimization(state: LocalState, actor: ActorContext, proje
       detail: "This increases cacheable prefix length without changing model behavior.",
       impact: "high",
       estimatedMonthlySavings: 680,
+      confidence: 0.76,
+      evidenceRefs: [],
+      calculationBasis: "Assumes repeated static policy prefix across imported support turns.",
       createdAt: now,
     },
     {
@@ -1451,6 +1676,9 @@ function seedPromptAndOptimization(state: LocalState, actor: ActorContext, proje
       detail: "Stable JSON key ordering improves prompt cache hit rate across support turns.",
       impact: "medium",
       estimatedMonthlySavings: 240,
+      confidence: 0.68,
+      evidenceRefs: [],
+      calculationBasis: "Assumes stable tool schema ordering improves cache hit rate across support turns.",
       createdAt: now,
     },
   );

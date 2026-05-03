@@ -8,6 +8,7 @@ import {
   type NormalizedTrace,
   parseTraceFile,
 } from "../domain/trace-processing";
+import { executeDeterministicGrader, summarizeEvalResults } from "../domain/eval-execution";
 import { generateAuditArtifacts, type AuditArtifacts } from "@/lib/ai/openai-audit-generation";
 import { buildAuditReportPdf } from "./audit-report-pdf";
 import { ApiError } from "./auth";
@@ -32,6 +33,8 @@ import type {
   EvalRun,
   ExportRecord,
   FailureCluster,
+  GraderCalibrationRun,
+  StoredGraderCalibrationResult,
   IssueComment,
   Organization,
   OrganizationMembership,
@@ -46,11 +49,14 @@ import type {
   Report,
   RoutingRule,
   StoredEvalCase,
+  StoredEvalResult,
   StoredGrader,
+  StoredHumanLabel,
   StoredIssue,
   StoredTrace,
   UpdateGraderInput,
   UpdateProjectSettingsInput,
+  UpsertHumanLabelInput,
   UploadedFile,
   UserProfile,
   WorkspaceState,
@@ -510,6 +516,10 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
     if (input.description !== undefined) patch.description = input.description.trim();
     if (input.active !== undefined) patch.active = input.active;
     if (input.model !== undefined) patch.model = input.model?.trim() || null;
+    if (input.passThreshold !== undefined) patch.pass_threshold = input.passThreshold;
+    if (input.reviewThreshold !== undefined) patch.review_threshold = input.reviewThreshold;
+    if (input.rubric !== undefined) patch.rubric = input.rubric.trim();
+    if (input.failureModes !== undefined) patch.failure_modes = normalizeList(input.failureModes);
     const { data } = await checked(
       this.db
         .from("graders")
@@ -937,27 +947,135 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
     const state: WorkspaceState = await this.getProjectState(actor, projectId);
     const project = state.activeProject;
     if (!project) throw new Error("Project not found for this organization.");
-    const failedCases = state.evalCases.filter((item) => item.status === "failed").length;
-    const passRate = state.evalCases.length
-      ? Math.round(((state.evalCases.length - failedCases) / state.evalCases.length) * 1000) / 10
-      : 0;
+    const now = new Date().toISOString();
+    const currentPrompt = state.promptVersions.find((item) => item.status === "current") || state.promptVersions[0];
     const run: EvalRun = {
       id: id("run"),
       organizationId: project.organizationId,
       projectId: project.id,
-      status: "completed",
-      passRate,
+      status: "running",
+      runType: "manual",
+      promptVersionId: currentPrompt?.id,
+      passRate: 0,
       totalCases: state.evalCases.length,
-      failedCases,
-      startedAt: new Date().toISOString(),
-      completedAt: new Date().toISOString(),
+      failedCases: 0,
+      reviewCases: 0,
+      totalResults: 0,
+      startedAt: now,
     };
     await checked(this.db.from("eval_runs").insert(toEvalRunRow(run)));
+    const results: StoredEvalResult[] = state.evalCases.flatMap((evalCase) =>
+      state.graders.filter((grader) => grader.active).map((grader) =>
+        ({
+          ...executeDeterministicGrader({
+            evalCase,
+            grader,
+            trace: evalCase.traceId ? state.traces.find((trace) => trace.id === evalCase.traceId) : undefined,
+            evalRunId: run.id,
+            promptVersionId: currentPrompt?.id,
+            now,
+          }),
+          organizationId: project.organizationId,
+          projectId: project.id,
+        }),
+      ),
+    );
+    const summary = summarizeEvalResults(results);
+    run.status = "completed";
+    run.passRate = summary.passRate;
+    run.averageScore = summary.averageScore;
+    run.failedCases = summary.failedCases;
+    run.reviewCases = summary.reviewCases;
+    run.totalResults = results.length;
+    run.completedAt = new Date().toISOString();
+    if (results.length) await checked(this.db.from("eval_results").upsert(results.map(toEvalResultRow)));
+    await Promise.all(
+      state.evalCases.map((evalCase) => {
+        const caseResults = results.filter((result) => result.evalCaseId === evalCase.id);
+        if (!caseResults.length) return Promise.resolve();
+        const score = Math.round(caseResults.reduce((total, result) => total + result.score, 0) / caseResults.length);
+        const status = caseResults.some((result) => result.status === "failed")
+          ? "failed"
+          : caseResults.some((result) => result.status === "review")
+            ? "review"
+            : "passed";
+        return checked(
+          this.db
+            .from("eval_cases")
+            .update({ last_result: score, status, updated_at: run.completedAt })
+            .eq("organization_id", project.organizationId)
+            .eq("id", evalCase.id),
+        );
+      }),
+    );
+    await checked(
+      this.db
+        .from("eval_runs")
+        .update(toEvalRunRow(run))
+        .eq("organization_id", project.organizationId)
+        .eq("id", run.id),
+    );
     await this.audit(actor, project.organizationId, "eval_run", run.id, "review_rule.executed", {
       totalCases: run.totalCases,
-      failedCases,
+      totalResults: run.totalResults,
+      failedCases: run.failedCases,
+      passRate: run.passRate,
     });
     return run;
+  }
+
+  async upsertHumanLabel(actor: ActorContext, input: UpsertHumanLabelInput) {
+    const organizationId = actor.organizationId || `org_${actor.userId}`;
+    const { data: evalCase } = await checked(
+      this.db
+        .from("eval_cases")
+        .select("*")
+        .eq("organization_id", organizationId)
+        .eq("id", input.evalCaseId)
+        .single(),
+    );
+    if (!evalCase) throw new Error("Eval case not found for this organization.");
+    const { data: grader } = await checked(
+      this.db
+        .from("graders")
+        .select("*")
+        .eq("organization_id", organizationId)
+        .eq("project_id", evalCase.project_id)
+        .eq("id", input.graderId)
+        .single(),
+    );
+    if (!grader) throw new Error("Grader not found for this eval case.");
+    const now = new Date().toISOString();
+    const label: StoredHumanLabel = {
+      id: id("label"),
+      organizationId,
+      projectId: evalCase.project_id,
+      evalCaseId: evalCase.id,
+      graderId: grader.id,
+      score: input.score,
+      status: input.status,
+      notes: input.notes?.trim() || undefined,
+      labeledBy: actor.userId,
+      labeledAt: now,
+      updatedAt: now,
+    };
+    const { data } = await checked(
+      this.db
+        .from("human_labels")
+        .upsert(toHumanLabelRow(label), {
+          onConflict: "organization_id,project_id,eval_case_id,grader_id",
+        })
+        .select("*")
+        .single(),
+    );
+    const saved = mapHumanLabel(data);
+    await this.upsertCalibrationForLabel(actor, saved);
+    await this.audit(actor, organizationId, "human_label", saved.id, "human_label.upserted", {
+      evalCaseId: saved.evalCaseId,
+      graderId: saved.graderId,
+      status: saved.status,
+    });
+    return saved;
   }
 
   async promotePromptCandidate(actor: ActorContext, projectId: string, candidateId: string) {
@@ -978,7 +1096,7 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       organizationId: project.organizationId,
       projectId: project.id,
       label: candidate.title,
-      prompt: candidate.explanation,
+      prompt: candidate.promptBody,
       status: "promoted",
       createdAt: new Date().toISOString(),
     };
@@ -1000,6 +1118,10 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       issues,
       issueComments,
       evalRuns,
+      evalResults,
+      humanLabels,
+      graderCalibrationRuns,
+      graderCalibrationResults,
       failureClusters,
       promptVersions,
       promptCandidates,
@@ -1017,6 +1139,10 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       checked(this.db.from("review_issues").select("*").eq("organization_id", organizationId).eq("project_id", projectId)),
       checked(this.db.from("issue_comments").select("*").eq("organization_id", organizationId).eq("project_id", projectId)),
       checked(this.db.from("eval_runs").select("*").eq("organization_id", organizationId).eq("project_id", projectId).order("started_at", { ascending: false })),
+      checked(this.db.from("eval_results").select("*").eq("organization_id", organizationId).eq("project_id", projectId).order("created_at", { ascending: false })),
+      checked(this.db.from("human_labels").select("*").eq("organization_id", organizationId).eq("project_id", projectId).order("updated_at", { ascending: false })),
+      checked(this.db.from("grader_calibration_runs").select("*").eq("organization_id", organizationId).eq("project_id", projectId).order("created_at", { ascending: false })),
+      checked(this.db.from("grader_calibration_results").select("*").eq("organization_id", organizationId).eq("project_id", projectId).order("created_at", { ascending: false })),
       checked(this.db.from("failure_clusters").select("*").eq("organization_id", organizationId).eq("project_id", projectId)),
       checked(this.db.from("prompt_versions").select("*").eq("organization_id", organizationId).eq("project_id", projectId)),
       checked(this.db.from("prompt_candidates").select("*").eq("organization_id", organizationId).eq("project_id", projectId)),
@@ -1035,6 +1161,10 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       issues: (issues.data || []).map(mapIssue),
       issueComments: (issueComments.data || []).map(mapIssueComment),
       evalRuns: (evalRuns.data || []).map(mapEvalRun),
+      evalResults: (evalResults.data || []).map(mapEvalResult),
+      humanLabels: (humanLabels.data || []).map(mapHumanLabel),
+      graderCalibrationRuns: (graderCalibrationRuns.data || []).map(mapGraderCalibrationRun),
+      graderCalibrationResults: (graderCalibrationResults.data || []).map(mapGraderCalibrationResult),
       failureClusters: (failureClusters.data || []).map(mapFailureCluster),
       promptVersions: (promptVersions.data || []).map(mapPromptVersion),
       promptCandidates: (promptCandidates.data || []).map(mapPromptCandidate),
@@ -1076,6 +1206,10 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
                 organizationId: project.organizationId,
                 projectId: project.id,
                 active: true,
+                passThreshold: grader.passThreshold ?? 0.8,
+                reviewThreshold: grader.reviewThreshold ?? 0.6,
+                rubric: grader.rubric || grader.description,
+                failureModes: grader.failureModes || [],
                 createdAt: now,
                 updatedAt: now,
               }),
@@ -1231,18 +1365,17 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
     );
     if (count && count > 0) return;
     const now = new Date().toISOString();
+    const promptVersion: PromptVersion = {
+      id: id("prompt"),
+      organizationId,
+      projectId,
+      label: "Current production prompt",
+      prompt: "Answer from available context, avoid unsupported claims, and escalate high-risk cases.",
+      status: "current",
+      createdAt: now,
+    };
     await checked(
-      this.db.from("prompt_versions").insert(
-        toPromptVersionRow({
-          id: id("prompt"),
-          organizationId,
-          projectId,
-          label: "Current production prompt",
-          prompt: "Answer from available context, avoid unsupported claims, and escalate high-risk cases.",
-          status: "current",
-          createdAt: now,
-        }),
-      ),
+      this.db.from("prompt_versions").insert(toPromptVersionRow(promptVersion)),
     );
     const candidates: PromptCandidate[] = [
       {
@@ -1250,10 +1383,22 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
         organizationId,
         projectId,
         title: "Escalation-first support prompt",
+        promptBody: [
+          "You are a support assistant for high-friction customer conversations.",
+          "Detect frustration, repeated failure, refund, privacy, and safety signals.",
+          "Escalate high-risk cases to a human with a concise evidence summary.",
+        ].join("\n"),
+        sourcePromptVersionId: promptVersion.id,
+        diffSummary: "Adds explicit escalation triggers and evidence handoff format.",
         expectedQualityLift: 12,
         expectedCostDelta: -3,
+        expectedLatencyDeltaMs: -80,
+        baselinePassRate: 72,
+        candidatePassRate: 84,
         regressionRisk: "low",
         explanation: "Adds explicit high-friction detection and human handoff criteria.",
+        confidence: 0.78,
+        evidenceRefs: [],
         createdAt: now,
       },
       {
@@ -1261,10 +1406,22 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
         organizationId,
         projectId,
         title: "Billing-safe prompt",
+        promptBody: [
+          "You are a support assistant for billing questions.",
+          "Confirm the account context before refund guidance.",
+          "State what evidence supports the answer and when to escalate.",
+        ].join("\n"),
+        sourcePromptVersionId: promptVersion.id,
+        diffSummary: "Tightens billing confirmation and escalation instructions.",
         expectedQualityLift: 8,
         expectedCostDelta: 1,
+        expectedLatencyDeltaMs: 120,
+        baselinePassRate: 72,
+        candidatePassRate: 80,
         regressionRisk: "medium",
         explanation: "Tightens refund and invoice language with confirmation steps.",
+        confidence: 0.7,
+        evidenceRefs: [],
         createdAt: now,
       },
     ];
@@ -1280,6 +1437,9 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
       estimatedCost: index >= 3 ? 0.028 : 0.012,
       estimatedLatencyMs: index >= 3 ? 2100 : 1200,
       trafficShare: Math.max(5, 35 - index * 6),
+      confidence: index >= 3 ? 0.82 : 0.74,
+      evidenceRefs: [],
+      calculationBasis: "Derived from intent risk, latest eval pass rate, and static pilot traffic assumptions.",
       createdAt: now,
     }));
     await checked(this.db.from("routing_rules").insert(routingRules.map(toRoutingRuleRow)));
@@ -1292,6 +1452,9 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
         detail: "This increases cacheable prefix length without changing model behavior.",
         impact: "high",
         estimatedMonthlySavings: 680,
+        confidence: 0.76,
+        evidenceRefs: [],
+        calculationBasis: "Assumes repeated static policy prefix across imported support turns.",
         createdAt: now,
       },
       {
@@ -1302,12 +1465,108 @@ class SupabaseEvalOpsStore implements EvalOpsStore {
         detail: "Stable JSON key ordering improves prompt cache hit rate across support turns.",
         impact: "medium",
         estimatedMonthlySavings: 240,
+        confidence: 0.68,
+        evidenceRefs: [],
+        calculationBasis: "Assumes stable tool schema ordering improves cache hit rate across support turns.",
         createdAt: now,
       },
     ];
     await checked(this.db.from("cache_recommendations").insert(cacheRecommendations.map(toCacheRecommendationRow)));
     await this.audit(actor, organizationId, "project", projectId, "optimizer.initialized", {
       candidateCount: candidates.length,
+    });
+  }
+
+  private async upsertCalibrationForLabel(actor: ActorContext, label: StoredHumanLabel) {
+    const { data: latestResultRows } = await checked(
+      this.db
+        .from("eval_results")
+        .select("*")
+        .eq("organization_id", label.organizationId)
+        .eq("project_id", label.projectId)
+        .eq("eval_case_id", label.evalCaseId)
+        .eq("grader_id", label.graderId)
+        .order("created_at", { ascending: false })
+        .limit(1),
+    );
+    const latestResult = latestResultRows?.[0] ? mapEvalResult(latestResultRows[0]) : undefined;
+    const now = new Date().toISOString();
+    const scoreDelta = Math.abs((latestResult?.score ?? label.score) - label.score);
+    const severity = latestResult && latestResult.status !== label.status
+      ? "high"
+      : scoreDelta >= 25
+        ? "medium"
+        : scoreDelta >= 10
+          ? "low"
+          : "none";
+    const run: GraderCalibrationRun = {
+      id: id("cal"),
+      organizationId: label.organizationId,
+      projectId: label.projectId,
+      graderId: label.graderId,
+      status: severity === "none" ? "completed" : "review",
+      agreement: severity === "none" ? 1 : 0,
+      totalLabels: 1,
+      disagreementCount: severity === "none" ? 0 : 1,
+      createdAt: now,
+    };
+    const result: StoredGraderCalibrationResult = {
+      id: id("calres"),
+      organizationId: label.organizationId,
+      projectId: label.projectId,
+      calibrationRunId: run.id,
+      evalCaseId: label.evalCaseId,
+      graderId: label.graderId,
+      humanLabelId: label.id,
+      evalResultId: latestResult?.id,
+      humanScore: label.score,
+      judgeScore: latestResult?.score,
+      scoreDelta,
+      disagreementSeverity: severity,
+      reviewStatus: severity === "none" ? "accepted" : "open",
+      createdAt: now,
+    };
+    await checked(this.db.from("grader_calibration_runs").insert(toGraderCalibrationRunRow(run)));
+    await checked(this.db.from("grader_calibration_results").insert(toGraderCalibrationResultRow(result)));
+    const { data: labels } = await checked(
+      this.db
+        .from("human_labels")
+        .select("id")
+        .eq("organization_id", label.organizationId)
+        .eq("project_id", label.projectId)
+        .eq("grader_id", label.graderId),
+    );
+    const { data: disagreements } = await checked(
+      this.db
+        .from("grader_calibration_results")
+        .select("id")
+        .eq("organization_id", label.organizationId)
+        .eq("project_id", label.projectId)
+        .eq("grader_id", label.graderId)
+        .neq("disagreement_severity", "none"),
+    );
+    const totalLabels = labels?.length || 0;
+    const disagreementCount = disagreements?.length || 0;
+    const agreement = totalLabels
+      ? Math.max(0, Math.round(((totalLabels - disagreementCount) / totalLabels) * 100) / 100)
+      : 1;
+    await checked(
+      this.db
+        .from("graders")
+        .update({
+          agreement,
+          health: agreement >= 0.75 ? "healthy" : "low_agreement",
+          last_calibrated_at: now,
+          updated_at: now,
+        })
+        .eq("organization_id", label.organizationId)
+        .eq("id", label.graderId),
+    );
+    await this.audit(actor, label.organizationId, "calibration_result", result.id, "grader.calibrated", {
+      evalCaseId: label.evalCaseId,
+      graderId: label.graderId,
+      disagreementSeverity: severity,
+      agreement,
     });
   }
 
@@ -1390,6 +1649,10 @@ function emptyProjectRecords(): Omit<WorkspaceState, "organization" | "user" | "
     issues: [],
     issueComments: [],
     evalRuns: [],
+    evalResults: [],
+    humanLabels: [],
+    graderCalibrationRuns: [],
+    graderCalibrationResults: [],
     failureClusters: [],
     promptVersions: [],
     promptCandidates: [],
@@ -1567,6 +1830,11 @@ const mapGrader = (row: any): StoredGrader => ({
   agreement: Number(row.agreement),
   model: row.model || undefined,
   active: row.active,
+  passThreshold: Number(row.pass_threshold ?? 0.8),
+  reviewThreshold: Number(row.review_threshold ?? 0.6),
+  rubric: row.rubric || row.description,
+  failureModes: row.failure_modes || [],
+  lastCalibratedAt: row.last_calibrated_at || undefined,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -1599,11 +1867,78 @@ const mapEvalRun = (row: any): EvalRun => ({
   organizationId: row.organization_id,
   projectId: row.project_id,
   status: row.status,
+  runType: row.run_type || "manual",
+  promptVersionId: row.prompt_version_id || undefined,
+  promptCandidateId: row.prompt_candidate_id || undefined,
   passRate: Number(row.pass_rate),
+  averageScore: row.average_score == null ? undefined : Number(row.average_score),
   totalCases: row.total_cases,
   failedCases: row.failed_cases,
+  reviewCases: row.review_cases ?? 0,
+  totalResults: row.total_results ?? 0,
+  metadata: row.metadata || {},
   startedAt: row.started_at,
   completedAt: row.completed_at || undefined,
+});
+const mapEvalResult = (row: any): StoredEvalResult => ({
+  id: row.id,
+  organizationId: row.organization_id,
+  projectId: row.project_id,
+  evalRunId: row.eval_run_id,
+  evalCaseId: row.eval_case_id,
+  graderId: row.grader_id,
+  status: row.status,
+  score: Number(row.score),
+  rationale: row.rationale,
+  evidenceRefs: row.evidence_refs || [],
+  promptVersionId: row.prompt_version_id || undefined,
+  promptCandidateId: row.prompt_candidate_id || undefined,
+  model: row.model || undefined,
+  latencyMs: row.latency_ms ?? undefined,
+  estimatedCost: row.estimated_cost == null ? undefined : Number(row.estimated_cost),
+  tokenUsage: row.token_usage || undefined,
+  confidence: row.confidence == null ? undefined : Number(row.confidence),
+  createdAt: row.created_at,
+});
+const mapHumanLabel = (row: any): StoredHumanLabel => ({
+  id: row.id,
+  organizationId: row.organization_id,
+  projectId: row.project_id,
+  evalCaseId: row.eval_case_id,
+  graderId: row.grader_id,
+  score: Number(row.score),
+  status: row.status,
+  notes: row.notes || undefined,
+  labeledBy: row.labeled_by,
+  labeledAt: row.labeled_at,
+  updatedAt: row.updated_at,
+});
+const mapGraderCalibrationRun = (row: any): GraderCalibrationRun => ({
+  id: row.id,
+  organizationId: row.organization_id,
+  projectId: row.project_id,
+  graderId: row.grader_id,
+  status: row.status,
+  agreement: Number(row.agreement),
+  totalLabels: row.total_labels,
+  disagreementCount: row.disagreement_count,
+  createdAt: row.created_at,
+});
+const mapGraderCalibrationResult = (row: any): StoredGraderCalibrationResult => ({
+  id: row.id,
+  organizationId: row.organization_id,
+  projectId: row.project_id,
+  calibrationRunId: row.calibration_run_id,
+  evalCaseId: row.eval_case_id,
+  graderId: row.grader_id,
+  humanLabelId: row.human_label_id,
+  evalResultId: row.eval_result_id || undefined,
+  humanScore: Number(row.human_score),
+  judgeScore: row.judge_score == null ? undefined : Number(row.judge_score),
+  scoreDelta: Number(row.score_delta),
+  disagreementSeverity: row.disagreement_severity,
+  reviewStatus: row.review_status,
+  createdAt: row.created_at,
 });
 const mapFailureCluster = (row: any): FailureCluster => ({
   id: row.id,
@@ -1629,10 +1964,18 @@ const mapPromptCandidate = (row: any): PromptCandidate => ({
   organizationId: row.organization_id,
   projectId: row.project_id,
   title: row.title,
+  promptBody: row.prompt_body || row.explanation,
+  sourcePromptVersionId: row.source_prompt_version_id || undefined,
+  diffSummary: row.diff_summary || undefined,
   expectedQualityLift: Number(row.expected_quality_lift),
   expectedCostDelta: Number(row.expected_cost_delta),
+  expectedLatencyDeltaMs: row.expected_latency_delta_ms ?? undefined,
+  baselinePassRate: row.baseline_pass_rate == null ? undefined : Number(row.baseline_pass_rate),
+  candidatePassRate: row.candidate_pass_rate == null ? undefined : Number(row.candidate_pass_rate),
   regressionRisk: row.regression_risk,
   explanation: row.explanation,
+  confidence: row.confidence == null ? undefined : Number(row.confidence),
+  evidenceRefs: row.evidence_refs || [],
   createdAt: row.created_at,
 });
 const mapRoutingRule = (row: any): RoutingRule => ({
@@ -1646,6 +1989,9 @@ const mapRoutingRule = (row: any): RoutingRule => ({
   estimatedCost: Number(row.estimated_cost),
   estimatedLatencyMs: row.estimated_latency_ms,
   trafficShare: Number(row.traffic_share),
+  confidence: row.confidence == null ? undefined : Number(row.confidence),
+  evidenceRefs: row.evidence_refs || [],
+  calculationBasis: row.calculation_basis || undefined,
   createdAt: row.created_at,
 });
 const mapCacheRecommendation = (row: any): CacheRecommendation => ({
@@ -1656,6 +2002,9 @@ const mapCacheRecommendation = (row: any): CacheRecommendation => ({
   detail: row.detail,
   impact: row.impact,
   estimatedMonthlySavings: Number(row.estimated_monthly_savings),
+  confidence: row.confidence == null ? undefined : Number(row.confidence),
+  evidenceRefs: row.evidence_refs || [],
+  calculationBasis: row.calculation_basis || undefined,
   createdAt: row.created_at,
 });
 const mapReport = (row: any): Report => ({
@@ -1666,6 +2015,9 @@ const mapReport = (row: any): Report => ({
   summary: row.summary,
   readinessScore: Number(row.readiness_score),
   recommendations: row.recommendations || [],
+  evidenceRefs: row.evidence_refs || [],
+  confidence: row.confidence == null ? undefined : Number(row.confidence),
+  structuredSections: row.structured_sections || [],
   createdAt: row.created_at,
 });
 const mapExport = (row: any): ExportRecord => ({
@@ -1791,6 +2143,11 @@ const toGraderRow = (item: StoredGrader) => ({
   agreement: item.agreement,
   model: item.model || null,
   active: item.active,
+  pass_threshold: item.passThreshold,
+  review_threshold: item.reviewThreshold,
+  rubric: item.rubric,
+  failure_modes: item.failureModes,
+  last_calibrated_at: item.lastCalibratedAt || null,
   created_at: item.createdAt,
   updated_at: item.updatedAt,
 });
@@ -1814,11 +2171,78 @@ const toEvalRunRow = (item: EvalRun) => ({
   organization_id: item.organizationId,
   project_id: item.projectId,
   status: item.status,
+  run_type: item.runType || "manual",
+  prompt_version_id: item.promptVersionId || null,
+  prompt_candidate_id: item.promptCandidateId || null,
   pass_rate: item.passRate,
+  average_score: item.averageScore ?? null,
   total_cases: item.totalCases,
   failed_cases: item.failedCases,
+  review_cases: item.reviewCases || 0,
+  total_results: item.totalResults || 0,
+  metadata: item.metadata || {},
   started_at: item.startedAt,
   completed_at: item.completedAt || null,
+});
+const toEvalResultRow = (item: StoredEvalResult) => ({
+  id: item.id,
+  organization_id: item.organizationId,
+  project_id: item.projectId,
+  eval_run_id: item.evalRunId,
+  eval_case_id: item.evalCaseId,
+  grader_id: item.graderId,
+  status: item.status,
+  score: item.score,
+  rationale: item.rationale,
+  evidence_refs: item.evidenceRefs || [],
+  prompt_version_id: item.promptVersionId || null,
+  prompt_candidate_id: item.promptCandidateId || null,
+  model: item.model || null,
+  latency_ms: item.latencyMs ?? null,
+  estimated_cost: item.estimatedCost ?? null,
+  token_usage: item.tokenUsage || null,
+  confidence: item.confidence ?? null,
+  created_at: item.createdAt,
+});
+const toHumanLabelRow = (item: StoredHumanLabel) => ({
+  id: item.id,
+  organization_id: item.organizationId,
+  project_id: item.projectId,
+  eval_case_id: item.evalCaseId,
+  grader_id: item.graderId,
+  score: item.score,
+  status: item.status,
+  notes: item.notes || null,
+  labeled_by: item.labeledBy,
+  labeled_at: item.labeledAt,
+  updated_at: item.updatedAt,
+});
+const toGraderCalibrationRunRow = (item: GraderCalibrationRun) => ({
+  id: item.id,
+  organization_id: item.organizationId,
+  project_id: item.projectId,
+  grader_id: item.graderId,
+  status: item.status,
+  agreement: item.agreement,
+  total_labels: item.totalLabels,
+  disagreement_count: item.disagreementCount,
+  created_at: item.createdAt,
+});
+const toGraderCalibrationResultRow = (item: StoredGraderCalibrationResult) => ({
+  id: item.id,
+  organization_id: item.organizationId,
+  project_id: item.projectId,
+  calibration_run_id: item.calibrationRunId,
+  eval_case_id: item.evalCaseId,
+  grader_id: item.graderId,
+  human_label_id: item.humanLabelId,
+  eval_result_id: item.evalResultId || null,
+  human_score: item.humanScore,
+  judge_score: item.judgeScore ?? null,
+  score_delta: item.scoreDelta,
+  disagreement_severity: item.disagreementSeverity,
+  review_status: item.reviewStatus,
+  created_at: item.createdAt,
 });
 const toFailureClusterRow = (item: FailureCluster) => ({
   id: item.id,
@@ -1844,10 +2268,18 @@ const toPromptCandidateRow = (item: PromptCandidate) => ({
   organization_id: item.organizationId,
   project_id: item.projectId,
   title: item.title,
+  prompt_body: item.promptBody,
+  source_prompt_version_id: item.sourcePromptVersionId || null,
+  diff_summary: item.diffSummary || null,
   expected_quality_lift: item.expectedQualityLift,
   expected_cost_delta: item.expectedCostDelta,
+  expected_latency_delta_ms: item.expectedLatencyDeltaMs ?? null,
+  baseline_pass_rate: item.baselinePassRate ?? null,
+  candidate_pass_rate: item.candidatePassRate ?? null,
   regression_risk: item.regressionRisk,
   explanation: item.explanation,
+  confidence: item.confidence ?? null,
+  evidence_refs: item.evidenceRefs || [],
   created_at: item.createdAt,
 });
 const toRoutingRuleRow = (item: RoutingRule) => ({
@@ -1861,6 +2293,9 @@ const toRoutingRuleRow = (item: RoutingRule) => ({
   estimated_cost: item.estimatedCost,
   estimated_latency_ms: item.estimatedLatencyMs,
   traffic_share: item.trafficShare,
+  confidence: item.confidence ?? null,
+  evidence_refs: item.evidenceRefs || [],
+  calculation_basis: item.calculationBasis || null,
   created_at: item.createdAt,
 });
 const toCacheRecommendationRow = (item: CacheRecommendation) => ({
@@ -1871,6 +2306,9 @@ const toCacheRecommendationRow = (item: CacheRecommendation) => ({
   detail: item.detail,
   impact: item.impact,
   estimated_monthly_savings: item.estimatedMonthlySavings,
+  confidence: item.confidence ?? null,
+  evidence_refs: item.evidenceRefs || [],
+  calculation_basis: item.calculationBasis || null,
   created_at: item.createdAt,
 });
 const toReportRow = (item: Report) => ({
@@ -1881,6 +2319,9 @@ const toReportRow = (item: Report) => ({
   summary: item.summary,
   readiness_score: item.readinessScore,
   recommendations: item.recommendations,
+  evidence_refs: item.evidenceRefs || [],
+  confidence: item.confidence ?? null,
+  structured_sections: item.structuredSections || [],
   created_at: item.createdAt,
 });
 const toExportRow = (item: ExportRecord) => ({

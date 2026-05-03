@@ -360,6 +360,76 @@ describe("local evalops store", () => {
     expect(payload.manifest.projectId).toBe(project.id);
     expect(payload.dataInventory.rawUploads.count).toBe(1);
     expect(payload.records.evalCases).toHaveLength(1);
+    expect(payload.records.evalResults).toBeDefined();
+  });
+
+  it("persists executed eval results, calibration labels, and prompt candidate bodies", async () => {
+    const store = await createStore();
+    const actor = {
+      userId: "user_1",
+      email: "founder@example.com",
+      organizationId: "org_1",
+    };
+
+    await store.ensureWorkspace(actor);
+    const project = await store.createProject(actor, {
+      name: "Milestone 5 Audit",
+      workflowType: "support_assistant",
+      objective: "Verify eval execution and calibration evidence.",
+      riskPreferences: ["Escalation"],
+      privacyMode: "redact_pii",
+    });
+    const queued = await store.createTraceImport(actor, {
+      projectId: project.id,
+      fileName: "m5.csv",
+      contentType: "text/csv",
+      text:
+        "conversation_id,user_input,assistant_output\n" +
+        "c_1,I asked three times and this is still not fixed,I understand this is frustrating and can create a ticket for a human agent.",
+    });
+    await store.processTraceImport(actor, {
+      projectId: project.id,
+      traceImportId: queued.importRecord.id,
+      jobId: queued.job.id,
+    });
+
+    const run = await store.rerunEvaluation(actor, project.id);
+    const afterRun = await store.getProjectState(actor, project.id);
+    const evalResult = afterRun.evalResults.find((item) => item.evalRunId === run.id);
+
+    expect(evalResult).toEqual(
+      expect.objectContaining({
+        evalCaseId: afterRun.evalCases[0].id,
+        graderId: afterRun.graders[0].id,
+        status: "passed",
+      }),
+    );
+    expect(run.passRate).toBe(100);
+
+    const label = await store.upsertHumanLabel(actor, {
+      evalCaseId: afterRun.evalCases[0].id,
+      graderId: afterRun.graders[0].id,
+      score: 40,
+      status: "failed",
+      notes: "Reference reviewer expected a stronger escalation.",
+    });
+    const afterLabel = await store.getProjectState(actor, project.id);
+
+    expect(label.status).toBe("failed");
+    expect(afterLabel.humanLabels).toHaveLength(1);
+    expect(afterLabel.graderCalibrationResults).toEqual([
+      expect.objectContaining({
+        evalCaseId: afterRun.evalCases[0].id,
+        disagreementSeverity: "high",
+        reviewStatus: "open",
+      }),
+    ]);
+    expect(afterLabel.graders[0].health).toBe("low_agreement");
+
+    const candidate = afterLabel.promptCandidates[0];
+    expect(candidate.promptBody).toContain("support assistant");
+    const promoted = await store.promotePromptCandidate(actor, project.id, candidate.id);
+    expect(promoted.prompt).toBe(candidate.promptBody);
   });
 
   it("deletes a project after typed confirmation and preserves a deletion receipt", async () => {

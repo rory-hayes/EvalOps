@@ -40,6 +40,10 @@ export type GeneratedArtifacts = {
     health: "healthy" | "low_agreement" | "review";
     agreement: number;
     model?: string;
+    passThreshold?: number;
+    reviewThreshold?: number;
+    rubric?: string;
+    failureModes?: string[];
   }>;
   report: {
     summary: string;
@@ -363,6 +367,10 @@ export function buildEvalArtifacts({
         description: "Checks intent-specific acceptance criteria against redacted assistant output.",
         health: passRate >= 70 ? "healthy" : "review",
         agreement: Math.max(0.55, Math.min(0.96, passRate / 100)),
+        passThreshold: 0.8,
+        reviewThreshold: 0.6,
+        rubric: "Score whether the assistant output satisfies the eval case acceptance criteria using redacted trace evidence.",
+        failureModes: ["Missing required behavior", "Unsupported claim", "Unsafe escalation handling"],
       },
       {
         id: makeStableId("grader", projectId, "policy-judge"),
@@ -372,6 +380,10 @@ export function buildEvalArtifacts({
         health: "review",
         agreement: 0.72,
         model: "gpt-4.1-mini",
+        passThreshold: 0.82,
+        reviewThreshold: 0.65,
+        rubric: "Judge policy compliance, groundedness, helpfulness, and safe escalation behavior.",
+        failureModes: ["Policy mismatch", "Unsupported answer", "No human handoff for high-risk case"],
       },
     ],
     report: {

@@ -2,7 +2,10 @@ import type {
   EvalCase,
   EvalDataset,
   EvalResult,
+  EvidenceRef,
   Grader,
+  GraderCalibrationResult,
+  HumanLabel,
   Intent,
   RiskLevel,
   TraceImport,
@@ -118,6 +121,11 @@ export type StoredGrader = Grader & {
   organizationId: string;
   projectId: string;
   active: boolean;
+  passThreshold: number;
+  reviewThreshold: number;
+  rubric: string;
+  failureModes: string[];
+  lastCalibratedAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -147,9 +155,16 @@ export type EvalRun = {
   organizationId: string;
   projectId: string;
   status: "queued" | "running" | "completed" | "failed";
+  runType?: "baseline" | "manual" | "candidate_comparison" | "calibration";
+  promptVersionId?: string;
+  promptCandidateId?: string;
   passRate: number;
+  averageScore?: number;
   totalCases: number;
   failedCases: number;
+  reviewCases?: number;
+  totalResults?: number;
+  metadata?: Record<string, unknown>;
   startedAt: string;
   completedAt?: string;
 };
@@ -180,7 +195,39 @@ export type StoredEvalDataset = EvalDataset & {
 export type StoredEvalResult = EvalResult & {
   organizationId: string;
   projectId: string;
+  evidenceRefs: EvidenceRef[];
+  promptVersionId?: string;
+  promptCandidateId?: string;
+  model?: string;
+  latencyMs?: number;
+  estimatedCost?: number;
+  tokenUsage?: Record<string, unknown>;
+  confidence?: number;
   createdAt: string;
+};
+
+export type StoredHumanLabel = HumanLabel & {
+  organizationId: string;
+  projectId: string;
+  notes?: string;
+  updatedAt: string;
+};
+
+export type GraderCalibrationRun = {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  graderId: string;
+  status: "completed" | "review";
+  agreement: number;
+  totalLabels: number;
+  disagreementCount: number;
+  createdAt: string;
+};
+
+export type StoredGraderCalibrationResult = GraderCalibrationResult & {
+  organizationId: string;
+  projectId: string;
 };
 
 export type PromptVersion = {
@@ -198,10 +245,18 @@ export type PromptCandidate = {
   organizationId: string;
   projectId: string;
   title: string;
+  promptBody: string;
+  sourcePromptVersionId?: string;
+  diffSummary?: string;
   expectedQualityLift: number;
   expectedCostDelta: number;
+  expectedLatencyDeltaMs?: number;
+  baselinePassRate?: number;
+  candidatePassRate?: number;
   regressionRisk: RiskLevel;
   explanation: string;
+  confidence?: number;
+  evidenceRefs?: EvidenceRef[];
   createdAt: string;
 };
 
@@ -216,6 +271,9 @@ export type RoutingRule = {
   estimatedCost: number;
   estimatedLatencyMs: number;
   trafficShare: number;
+  confidence?: number;
+  evidenceRefs?: EvidenceRef[];
+  calculationBasis?: string;
   createdAt: string;
 };
 
@@ -227,6 +285,9 @@ export type CacheRecommendation = {
   detail: string;
   impact: "low" | "medium" | "high";
   estimatedMonthlySavings: number;
+  confidence?: number;
+  evidenceRefs?: EvidenceRef[];
+  calculationBasis?: string;
   createdAt: string;
 };
 
@@ -238,6 +299,13 @@ export type Report = {
   summary: string;
   readinessScore: number;
   recommendations: string[];
+  evidenceRefs?: EvidenceRef[];
+  confidence?: number;
+  structuredSections?: Array<{
+    title: string;
+    body: string;
+    evidenceRefs: EvidenceRef[];
+  }>;
   createdAt: string;
 };
 
@@ -303,6 +371,10 @@ export type WorkspaceState = {
   issues: StoredIssue[];
   issueComments: IssueComment[];
   evalRuns: EvalRun[];
+  evalResults: StoredEvalResult[];
+  humanLabels: StoredHumanLabel[];
+  graderCalibrationRuns: GraderCalibrationRun[];
+  graderCalibrationResults: StoredGraderCalibrationResult[];
   failureClusters: FailureCluster[];
   promptVersions: PromptVersion[];
   promptCandidates: PromptCandidate[];
@@ -378,6 +450,18 @@ export type UpdateGraderInput = {
   description?: string;
   active?: boolean;
   model?: string | null;
+  passThreshold?: number;
+  reviewThreshold?: number;
+  rubric?: string;
+  failureModes?: string[];
+};
+
+export type UpsertHumanLabelInput = {
+  evalCaseId: string;
+  graderId: string;
+  score: number;
+  status: EvalResult["status"];
+  notes?: string;
 };
 
 export type EvalOpsStore = {
@@ -424,5 +508,6 @@ export type EvalOpsStore = {
   }>;
   purgeRawProjectData(actor: ActorContext, input: PurgeRawProjectDataInput): Promise<DataOperationReceipt>;
   rerunEvaluation(actor: ActorContext, projectId: string): Promise<EvalRun>;
+  upsertHumanLabel(actor: ActorContext, input: UpsertHumanLabelInput): Promise<StoredHumanLabel>;
   promotePromptCandidate(actor: ActorContext, projectId: string, candidateId: string): Promise<PromptVersion>;
 };

@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Card, PageHeader, ProgressBar, type Tone } from "@/components/primitives";
+import { formatEvidenceCount, normalizeCalculationBasis, normalizeConfidenceText } from "@/lib/domain/evidence";
 import { SELECTED_PROJECT_STORAGE_KEY } from "@/lib/project-selection";
 import type { WorkspaceState } from "@/lib/server/types";
 
@@ -231,9 +232,9 @@ function DashboardView({
         {[
           ["Trace imports", state.traceImports.length, "Durable import records", "blue"],
           ["Eval cases", state.evalCases.length, "Generated from persisted traces", "green"],
+          ["Eval results", state.evalResults.length, "Executed grader evidence", "blue"],
           ["Open issues", summary.openIssues, "Reviewer action required", summary.openIssues ? "red" : "green"],
           ["Pass rate", `${summary.passRate}%`, "Latest persisted run", "blue"],
-          ["Audit events", state.auditEvents.length, "Traceable actions", "slate"],
         ].map(([label, value, detail, tone]) => (
           <MetricCard key={String(label)} label={String(label)} value={String(value)} detail={String(detail)} tone={String(tone)} />
         ))}
@@ -805,6 +806,9 @@ function GradersView({
 }) {
   const [selectedId, setSelectedId] = useState(state.graders[0]?.id || "");
   const selected = state.graders.find((grader) => grader.id === selectedId) || state.graders[0];
+  const labeledCount = state.humanLabels.length;
+  const disagreementCount = state.graderCalibrationResults.filter((item) => item.disagreementSeverity !== "none").length;
+  const nextReview = disagreementCount ? `${disagreementCount} disagreement${disagreementCount === 1 ? "" : "s"} open` : "After 20 new cases";
 
   return (
     <>
@@ -827,9 +831,9 @@ function GradersView({
           </p>
           <div className="mt-4 space-y-4">
             {[
-              ["Pass threshold", 82],
-              ["Manual review band", 68],
-              ["Disagreement warning", 0.74],
+              ["Pass threshold", selected ? Math.round(selected.passThreshold * 100) : 80],
+              ["Manual review band", selected ? Math.round(selected.reviewThreshold * 100) : 60],
+              ["Disagreement warning", selected ? selected.agreement : 0.75],
             ].map(([label, value]) => (
               <div key={label} className="text-sm">
                 <div className="mb-2 flex items-center justify-between">
@@ -854,9 +858,9 @@ function GradersView({
           <h2 className="text-lg font-semibold text-slate-950">Calibration reference set</h2>
           <div className="mt-4 space-y-3 text-sm text-slate-700">
             {[
-              ["Human-labeled cases", "24"],
-              ["Reference disagreements", "3"],
-              ["Next calibration review", "After 20 new cases"],
+              ["Human-labeled cases", String(labeledCount)],
+              ["Reference disagreements", String(disagreementCount)],
+              ["Next calibration review", nextReview],
             ].map(([label, value]) => (
               <div key={label} className="flex justify-between gap-3 rounded-[7px] bg-slate-50 p-3">
                 <span>{label}</span>
@@ -869,7 +873,7 @@ function GradersView({
           <h2 className="text-lg font-semibold text-slate-950">Health warnings</h2>
           <div className="mt-4 space-y-3">
             <WarningRow title="Low agreement review" detail="Escalation and billing graders are highlighted when agreement drops below threshold." />
-            <WarningRow title="Rubric drift" detail="Prompt changes require spot-checking reference scores before promotion." />
+            <WarningRow title="Evidence-backed calibration" detail={`${state.evalResults.length} executed result${state.evalResults.length === 1 ? "" : "s"} available for judge review.`} />
           </div>
         </Card>
       </div>
@@ -882,7 +886,7 @@ function GradersView({
               onChange={setSelectedId}
               options={state.graders.map((grader): [string, string] => [grader.id, grader.name])}
             />
-            <GraderEditor key={selected.id} grader={selected} busy={busy} mutate={mutate} />
+            <GraderEditor key={selected.id} state={state} grader={selected} busy={busy} mutate={mutate} />
           </div>
         ) : (
           <EmptyText text="Graders are created after the first successful import." />
@@ -915,6 +919,9 @@ function GradersView({
               <div className="mb-2 flex justify-between text-sm"><span>Agreement</span><strong>{grader.agreement.toFixed(2)}</strong></div>
               <ProgressBar value={grader.agreement * 100} tone={grader.agreement >= 0.75 ? "green" : "amber"} />
             </div>
+            <div className="mt-4 text-xs leading-5 text-slate-500">
+              {state.graderCalibrationResults.filter((item) => item.graderId === grader.id && item.reviewStatus === "open").length} open calibration review{state.graderCalibrationResults.filter((item) => item.graderId === grader.id && item.reviewStatus === "open").length === 1 ? "" : "s"}
+            </div>
           </Card>
         ))}
         {!state.graders.length ? <Card className="p-5"><EmptyText text="Graders are created after the first import." /></Card> : null}
@@ -924,10 +931,12 @@ function GradersView({
 }
 
 function GraderEditor({
+  state,
   grader,
   busy,
   mutate,
 }: {
+  state: WorkspaceState;
   grader: WorkspaceState["graders"][number];
   busy: string | null;
   mutate: MutateFn;
@@ -935,6 +944,20 @@ function GraderEditor({
   const [descriptionDraft, setDescriptionDraft] = useState(grader.description);
   const [modelDraft, setModelDraft] = useState(grader.model || "");
   const [activeDraft, setActiveDraft] = useState(grader.active);
+  const [passThresholdDraft, setPassThresholdDraft] = useState(String(Math.round(grader.passThreshold * 100)));
+  const [reviewThresholdDraft, setReviewThresholdDraft] = useState(String(Math.round(grader.reviewThreshold * 100)));
+  const [rubricDraft, setRubricDraft] = useState(grader.rubric || grader.description);
+  const [failureModesDraft, setFailureModesDraft] = useState((grader.failureModes || []).join("\n"));
+  const referenceCase = state.evalCases[0];
+  const existingLabel = referenceCase
+    ? state.humanLabels.find((item) => item.evalCaseId === referenceCase.id && item.graderId === grader.id)
+    : undefined;
+  const latestResult = referenceCase
+    ? state.evalResults.find((item) => item.evalCaseId === referenceCase.id && item.graderId === grader.id)
+    : undefined;
+  const [labelScoreDraft, setLabelScoreDraft] = useState(String(existingLabel?.score ?? latestResult?.score ?? 75));
+  const [labelStatusDraft, setLabelStatusDraft] = useState(existingLabel?.status || latestResult?.status || "review");
+  const [labelNotesDraft, setLabelNotesDraft] = useState(existingLabel?.notes || "Reference score from calibration review.");
 
   return (
     <div>
@@ -965,7 +988,51 @@ function GraderEditor({
             label="Active in audit runs"
             detail="Paused graders remain visible for review but are not counted as active pilot checks."
           />
+          <label className="block">
+            <span className="text-sm font-semibold text-slate-700">Pass threshold</span>
+            <input
+              aria-label="Pass threshold percent"
+              type="number"
+              min="0"
+              max="100"
+              className="mt-2 h-11 w-full rounded-[7px] border border-slate-200 px-3 text-sm"
+              value={passThresholdDraft}
+              onChange={(event) => setPassThresholdDraft(event.target.value)}
+            />
+          </label>
+          <label className="block">
+            <span className="text-sm font-semibold text-slate-700">Review threshold</span>
+            <input
+              aria-label="Review threshold percent"
+              type="number"
+              min="0"
+              max="100"
+              className="mt-2 h-11 w-full rounded-[7px] border border-slate-200 px-3 text-sm"
+              value={reviewThresholdDraft}
+              onChange={(event) => setReviewThresholdDraft(event.target.value)}
+            />
+          </label>
         </div>
+      </div>
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <label className="block">
+          <span className="text-sm font-semibold text-slate-700">Rubric</span>
+          <textarea
+            aria-label="Grader rubric"
+            className="mt-2 min-h-24 w-full rounded-[7px] border border-slate-200 p-3 text-sm leading-6"
+            value={rubricDraft}
+            onChange={(event) => setRubricDraft(event.target.value)}
+          />
+        </label>
+        <label className="block">
+          <span className="text-sm font-semibold text-slate-700">Failure modes</span>
+          <textarea
+            aria-label="Failure modes"
+            className="mt-2 min-h-24 w-full rounded-[7px] border border-slate-200 p-3 text-sm leading-6"
+            value={failureModesDraft}
+            onChange={(event) => setFailureModesDraft(event.target.value)}
+          />
+        </label>
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <Button
@@ -978,6 +1045,10 @@ function GraderEditor({
                   description: descriptionDraft,
                   active: activeDraft,
                   model: modelDraft.trim() || null,
+                  passThreshold: clampPercent(passThresholdDraft) / 100,
+                  reviewThreshold: clampPercent(reviewThresholdDraft) / 100,
+                  rubric: rubricDraft,
+                  failureModes: failureModesDraft.split("\n").map((item) => item.trim()).filter(Boolean),
                 }),
               }),
             )
@@ -989,6 +1060,65 @@ function GraderEditor({
         <p className="text-xs leading-5 text-slate-500">
           Changes persist immediately and are audit logged for pilot review.
         </p>
+      </div>
+      <div className="mt-5 rounded-[8px] border border-slate-200 bg-slate-50 p-4">
+        <h3 className="font-semibold text-slate-900">Human reference label</h3>
+        {referenceCase ? (
+          <>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              Calibrate against <strong>{referenceCase.name}</strong>. Latest judge score: {latestResult ? `${latestResult.score}% ${latestResult.status}` : "not run yet"}.
+            </p>
+            <div className="mt-3 grid gap-3 md:grid-cols-[120px_150px_1fr]">
+              <input
+                aria-label="Human reference score"
+                type="number"
+                min="0"
+                max="100"
+                className="h-11 rounded-[7px] border border-slate-200 px-3 text-sm"
+                value={labelScoreDraft}
+                onChange={(event) => setLabelScoreDraft(event.target.value)}
+              />
+              <select
+                aria-label="Human reference status"
+                className="h-11 rounded-[7px] border border-slate-200 px-3 text-sm"
+                value={labelStatusDraft}
+                onChange={(event) => setLabelStatusDraft(event.target.value as "passed" | "failed" | "review")}
+              >
+                <option value="passed">passed</option>
+                <option value="review">review</option>
+                <option value="failed">failed</option>
+              </select>
+              <input
+                aria-label="Human label notes"
+                className="h-11 rounded-[7px] border border-slate-200 px-3 text-sm"
+                value={labelNotesDraft}
+                onChange={(event) => setLabelNotesDraft(event.target.value)}
+              />
+            </div>
+            <Button
+              className="mt-3"
+              variant="secondary"
+              disabled={busy === `${grader.id}-label`}
+              onClick={() =>
+                mutate(`${grader.id}-label`, () =>
+                  api(`/api/eval-cases/${referenceCase.id}/labels`, {
+                    method: "POST",
+                    body: JSON.stringify({
+                      graderId: grader.id,
+                      score: clampPercent(labelScoreDraft),
+                      status: labelStatusDraft,
+                      notes: labelNotesDraft,
+                    }),
+                  }),
+                )
+              }
+            >
+              Save reference label
+            </Button>
+          </>
+        ) : (
+          <EmptyText text="Generate eval cases before adding human labels." />
+        )}
       </div>
     </div>
   );
@@ -1050,14 +1180,17 @@ function PromptOptimizerView({
               <p className="mt-3 text-sm leading-6 text-slate-600">{candidate.explanation}</p>
               <div className="mt-4 rounded-[8px] bg-slate-50 p-3">
                 <h3 className="text-sm font-semibold text-slate-900">Candidate prompt body</h3>
-                <pre className="mt-2 whitespace-pre-wrap text-xs leading-6 text-slate-700">{candidatePromptBody(candidate.title)}</pre>
+                <pre className="mt-2 whitespace-pre-wrap text-xs leading-6 text-slate-700">{candidate.promptBody}</pre>
               </div>
               <div className="mt-5 grid grid-cols-2 gap-3 text-sm xl:grid-cols-4">
                 <MetricMini label="Quality lift" value={`${candidate.expectedQualityLift}%`} />
                 <MetricMini label="Cost delta" value={`${candidate.expectedCostDelta}%`} />
-                <MetricMini label="Latency" value={candidate.regressionRisk === "low" ? "-80ms" : "+120ms"} />
-                <MetricMini label="Regression" value={candidate.regressionRisk} />
+                <MetricMini label="Latency" value={`${candidate.expectedLatencyDeltaMs && candidate.expectedLatencyDeltaMs > 0 ? "+" : ""}${candidate.expectedLatencyDeltaMs ?? 0}ms`} />
+                <MetricMini label="Pass rate" value={`${candidate.baselinePassRate ?? 0}% -> ${candidate.candidatePassRate ?? 0}%`} />
               </div>
+              <p className="mt-3 text-xs leading-5 text-slate-500">
+                {candidate.diffSummary || "Prompt diff summary pending."} {normalizeConfidenceText(candidate.confidence)} · {formatEvidenceCount(candidate.evidenceRefs)}
+              </p>
               <Button
                 className="mt-5"
                 disabled={busy === candidate.id}
@@ -1149,8 +1282,9 @@ function RoutingCachingView({
                   <Badge tone="amber">{rule.fallback}</Badge>
                 </div>
                 <p className="mt-2 leading-6 text-amber-800">
-                  Route through stronger model or human review until regression pass rate improves.
+                  {normalizeCalculationBasis(rule.calculationBasis, "Route through stronger model or human review until regression pass rate improves.")}
                 </p>
+                <p className="mt-2 text-xs text-amber-700">{normalizeConfidenceText(rule.confidence)} · {formatEvidenceCount(rule.evidenceRefs)}</p>
               </div>
             )) : <EmptyText text="High-risk route callouts appear after project setup." />}
           </div>
@@ -1195,6 +1329,7 @@ function RoutingCachingView({
             <Badge tone={item.impact === "high" ? "green" : "amber"}>{item.impact} impact</Badge>
             <h2 className="mt-4 text-lg font-semibold text-slate-950">{item.title}</h2>
             <p className="mt-3 text-sm leading-6 text-slate-600">{item.detail}</p>
+            <p className="mt-3 text-xs leading-5 text-slate-500">{normalizeCalculationBasis(item.calculationBasis)} {normalizeConfidenceText(item.confidence)} · {formatEvidenceCount(item.evidenceRefs)}</p>
             <p className="mt-4 text-sm font-semibold text-emerald-700">${item.estimatedMonthlySavings}/mo estimated savings</p>
           </Card>
         ))}
@@ -1232,6 +1367,7 @@ function ReportsView({
           <h2 className="text-sm font-semibold text-slate-500">Eval health score</h2>
           <div className="mt-4 text-5xl font-semibold text-slate-950">{report?.readinessScore ?? 0}</div>
           <p className="mt-4 text-sm leading-6 text-slate-600">{report?.summary || "Upload traces to generate a report."}</p>
+          <p className="mt-3 text-xs leading-5 text-slate-500">{normalizeConfidenceText(report?.confidence)} · {formatEvidenceCount(report?.evidenceRefs)}</p>
         </Card>
         <Card className="p-5">
           <h2 className="text-lg font-semibold text-slate-950">Executive summary</h2>
@@ -1242,6 +1378,17 @@ function ReportsView({
               <div key={recommendation} className="rounded-[8px] border border-slate-200 p-3 text-sm text-slate-700">{recommendation}</div>
             ))}
           </div>
+          {report?.structuredSections?.length ? (
+            <div className="mt-5 space-y-3">
+              {report.structuredSections.map((section) => (
+                <div key={section.title} className="rounded-[8px] bg-slate-50 p-3 text-sm leading-6 text-slate-700">
+                  <strong className="text-slate-950">{section.title}</strong>
+                  <p className="mt-1">{section.body}</p>
+                  <p className="mt-2 text-xs text-slate-500">{formatEvidenceCount(section.evidenceRefs)}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </Card>
       </div>
       <div className="mt-4 grid gap-4 xl:grid-cols-3">
@@ -1274,8 +1421,8 @@ function ReportsView({
           <h2 className="text-lg font-semibold text-slate-950">Baseline scorecard</h2>
           <div className="mt-4 grid gap-3">
             <MetricMini label="Pass rate" value={`${summary.passRate}%`} />
-            <MetricMini label="Open issues" value={String(summary.openIssues)} />
-            <MetricMini label="Eval cases" value={String(state.evalCases.length)} />
+            <MetricMini label="Eval results" value={String(state.evalResults.length)} />
+            <MetricMini label="Human labels" value={String(state.humanLabels.length)} />
           </div>
         </Card>
       </div>
@@ -1767,6 +1914,10 @@ function useDataInventory(state: WorkspaceState) {
       state.evalCases.length +
       state.graders.length +
       state.evalRuns.length +
+      state.evalResults.length +
+      state.humanLabels.length +
+      state.graderCalibrationRuns.length +
+      state.graderCalibrationResults.length +
       state.failureClusters.length +
       state.promptVersions.length +
       state.promptCandidates.length +
@@ -1809,6 +1960,12 @@ function earliestDate(values: Array<string | undefined>) {
 
 function formatOptionalDate(value?: string) {
   return value ? formatDate(value) : "Not scheduled";
+}
+
+function clampPercent(value: string) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(100, parsed));
 }
 
 function rawPurgeSummary(state: WorkspaceState) {
@@ -2062,21 +2219,6 @@ function statusTone(status: string): Tone {
   if (status === "generated" || status === "completed") return "green";
   if (status === "running") return "blue";
   return "slate";
-}
-
-function candidatePromptBody(title: string) {
-  if (/billing/i.test(title)) {
-    return [
-      "You are a support assistant for billing questions.",
-      "Confirm the account context before refund guidance.",
-      "State what evidence supports the answer and when to escalate.",
-    ].join("\n");
-  }
-  return [
-    "You are a support assistant for high-friction customer conversations.",
-    "Detect frustration, repeated failure, refund, privacy, and safety signals.",
-    "Escalate high-risk cases to a human with a concise evidence summary.",
-  ].join("\n");
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {

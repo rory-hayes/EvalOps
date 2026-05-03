@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildOpenAIAuditPrompt, mapParsedAuditOutput, requireOpenAIAuditConfig } from "./openai-audit-generation";
+import {
+  buildOpenAIAuditPrompt,
+  mapParsedAuditOutput,
+  type OpenAIAuditOutput,
+  openAIAuditOutputSchema,
+  requireOpenAIAuditConfig,
+} from "./openai-audit-generation";
 import type { NormalizedTrace } from "@/lib/domain/trace-processing";
 import type { Project } from "@/lib/server/types";
 
@@ -22,89 +28,13 @@ describe("OpenAI audit generation", () => {
   it("maps parsed structured output into persisted audit artifacts", () => {
     const project = buildProject();
     const traces = [buildTrace()];
+    const output = buildAuditOutput();
 
     const result = mapParsedAuditOutput({
       project,
       traces,
       generatedAt: "2026-05-03T12:00:00.000Z",
-      output: {
-        cases: [
-          {
-            name: "Escalation handoff regression",
-            intent: "Escalation",
-            set: "regression",
-            sourceTraceId: "trace_1",
-            userInput: "User needs help after repeated failures.",
-            expectedBehavior: "Acknowledge frustration and offer a human handoff.",
-            acceptanceCriteria: ["Acknowledges frustration", "Offers human handoff"],
-            risk: "high",
-            grader: "Escalation policy judge",
-            lastResult: 42,
-            status: "failed",
-            source: "production",
-          },
-        ],
-        issues: [
-          {
-            evalCaseName: "Escalation handoff regression",
-            title: "Escalation handoff missing",
-            severity: "high",
-            description: "The answer did not offer a human escalation path.",
-          },
-        ],
-        graders: [
-          {
-            name: "Escalation policy judge",
-            type: "llm_judge",
-            description: "Scores escalation correctness against the audit rubric.",
-            health: "review",
-            agreement: 0.74,
-            model: "gpt-5.5",
-          },
-        ],
-        promptCandidates: [
-          {
-            title: "Escalation-first support prompt",
-            expectedQualityLift: 13,
-            expectedCostDelta: 2,
-            regressionRisk: "low",
-            explanation: "Adds explicit frustration and handoff rules.",
-          },
-        ],
-        routingRules: [
-          {
-            intent: "Escalation",
-            model: "gpt-5.5",
-            fallback: "Human review",
-            qualityScore: 91,
-            estimatedCost: 0.035,
-            estimatedLatencyMs: 2200,
-            trafficShare: 12,
-          },
-        ],
-        cacheRecommendations: [
-          {
-            title: "Move policy text before dynamic conversation context",
-            detail: "The static policy block can become a larger cacheable prefix.",
-            impact: "high",
-            estimatedMonthlySavings: 420,
-          },
-        ],
-        failureClusters: [
-          {
-            label: "Escalation misses",
-            severity: "high",
-            issueCount: 1,
-            percent: 100,
-          },
-        ],
-        report: {
-          title: "Eval Debt Audit Report",
-          summary: "The workflow has a high-risk escalation gap.",
-          readinessScore: 62,
-          recommendations: ["Fix escalation handoff behavior before expanding traffic."],
-        },
-      },
+      output,
     });
 
     expect(result.evalCases).toEqual([
@@ -121,11 +51,113 @@ describe("OpenAI audit generation", () => {
         severity: "high",
       }),
     ]);
-    expect(result.promptCandidates).toHaveLength(1);
-    expect(result.routingRules).toHaveLength(1);
-    expect(result.cacheRecommendations).toHaveLength(1);
+    expect(result.promptCandidates).toEqual([
+      expect.objectContaining({
+        promptBody: "You are a support assistant. Acknowledge repeated failures and offer a human handoff.",
+        sourcePromptVersionId: "prompt_current",
+        diffSummary: "Adds explicit escalation triggers and handoff language.",
+        confidence: 0.84,
+        evidenceRefs: [
+          expect.objectContaining({
+            entityType: "trace",
+            entityId: "trace_1",
+          }),
+        ],
+      }),
+    ]);
+    expect(result.routingRules).toEqual([
+      expect.objectContaining({
+        confidence: 0.79,
+        evidenceRefs: [
+          expect.objectContaining({
+            entityType: "trace",
+            entityId: "trace_1",
+          }),
+        ],
+        calculationBasis: "Escalation traces are high risk and failed the baseline handoff case.",
+      }),
+    ]);
+    expect(result.cacheRecommendations).toEqual([
+      expect.objectContaining({
+        confidence: 0.72,
+        evidenceRefs: [
+          expect.objectContaining({
+            entityType: "trace",
+            entityId: "trace_1",
+          }),
+        ],
+        calculationBasis: "Static policy text repeats across imported support traces.",
+      }),
+    ]);
     expect(result.failureClusters).toHaveLength(1);
     expect(result.report.readinessScore).toBe(62);
+  });
+
+  it("keeps structured output evidence fields and requires candidate prompt bodies", () => {
+    const parsed = openAIAuditOutputSchema.parse(buildAuditOutput());
+
+    expect(parsed.promptCandidates[0]).toMatchObject({
+      promptBody: "You are a support assistant. Acknowledge repeated failures and offer a human handoff.",
+      sourcePromptVersionId: "prompt_current",
+      confidence: 0.84,
+      evidenceRefs: [
+        expect.objectContaining({
+          entityType: "trace",
+          entityId: "trace_1",
+        }),
+      ],
+    });
+    expect(parsed.routingRules[0]).toMatchObject({
+      confidence: 0.79,
+      evidenceRefs: [
+        expect.objectContaining({
+          entityType: "trace",
+        }),
+      ],
+      calculationBasis: "Escalation traces are high risk and failed the baseline handoff case.",
+    });
+    expect(parsed.cacheRecommendations[0]).toMatchObject({
+      confidence: 0.72,
+      evidenceRefs: [
+        expect.objectContaining({
+          entityType: "trace",
+        }),
+      ],
+      calculationBasis: "Static policy text repeats across imported support traces.",
+    });
+
+    const candidateWithoutPromptBody = { ...buildAuditOutput().promptCandidates[0] };
+    delete (candidateWithoutPromptBody as { promptBody?: string }).promptBody;
+    expect(openAIAuditOutputSchema.safeParse({
+      ...buildAuditOutput(),
+      promptCandidates: [candidateWithoutPromptBody],
+    }).success).toBe(false);
+  });
+
+  it("defaults evidence arrays while mapping older recommendation payloads", () => {
+    const output = buildAuditOutput();
+    const candidateWithoutEvidenceRefs = { ...output.promptCandidates[0] };
+    const routeWithoutEvidenceRefs = { ...output.routingRules[0] };
+    const cacheWithoutEvidenceRefs = { ...output.cacheRecommendations[0] };
+    delete (candidateWithoutEvidenceRefs as { evidenceRefs?: unknown }).evidenceRefs;
+    delete (routeWithoutEvidenceRefs as { evidenceRefs?: unknown }).evidenceRefs;
+    delete (cacheWithoutEvidenceRefs as { evidenceRefs?: unknown }).evidenceRefs;
+
+    const result = mapParsedAuditOutput({
+      project: buildProject(),
+      traces: [buildTrace()],
+      generatedAt: "2026-05-03T12:00:00.000Z",
+      output: {
+        ...output,
+        promptCandidates: [candidateWithoutEvidenceRefs],
+        routingRules: [routeWithoutEvidenceRefs],
+        cacheRecommendations: [cacheWithoutEvidenceRefs],
+      },
+    });
+
+    expect(result.promptCandidates?.[0].evidenceRefs).toEqual([]);
+    expect(result.routingRules?.[0].evidenceRefs).toEqual([]);
+    expect(result.cacheRecommendations?.[0].evidenceRefs).toEqual([]);
   });
 
   it("builds a privacy-safe prompt from redacted trace fields", () => {
@@ -144,9 +176,126 @@ describe("OpenAI audit generation", () => {
     });
 
     expect(prompt).toContain("[email]");
+    expect(prompt).toContain("evidence-backed prompt candidates");
+    expect(prompt).toContain("promptBody");
+    expect(prompt).toContain("evidenceRefs");
     expect(prompt).not.toContain("founder@example.com");
   });
 });
+
+function buildAuditOutput(): OpenAIAuditOutput {
+  return {
+    cases: [
+      {
+        name: "Escalation handoff regression",
+        intent: "Escalation",
+        set: "regression",
+        sourceTraceId: "trace_1",
+        userInput: "User needs help after repeated failures.",
+        expectedBehavior: "Acknowledge frustration and offer a human handoff.",
+        acceptanceCriteria: ["Acknowledges frustration", "Offers human handoff"],
+        risk: "high",
+        grader: "Escalation policy judge",
+        lastResult: 42,
+        status: "failed",
+        source: "production",
+      },
+    ],
+    issues: [
+      {
+        evalCaseName: "Escalation handoff regression",
+        title: "Escalation handoff missing",
+        severity: "high",
+        description: "The answer did not offer a human escalation path.",
+      },
+    ],
+    graders: [
+      {
+        name: "Escalation policy judge",
+        type: "llm_judge",
+        description: "Scores escalation correctness against the audit rubric.",
+        health: "review",
+        agreement: 0.74,
+        model: "gpt-5.5",
+      },
+    ],
+    promptCandidates: [
+      {
+        title: "Escalation-first support prompt",
+        promptBody: "You are a support assistant. Acknowledge repeated failures and offer a human handoff.",
+        sourcePromptVersionId: "prompt_current",
+        diffSummary: "Adds explicit escalation triggers and handoff language.",
+        expectedQualityLift: 13,
+        expectedCostDelta: 2,
+        expectedLatencyDeltaMs: 120,
+        baselinePassRate: 42,
+        candidatePassRate: 78,
+        regressionRisk: "low",
+        explanation: "Adds explicit frustration and handoff rules.",
+        confidence: 0.84,
+        evidenceRefs: [
+          {
+            entityType: "trace",
+            entityId: "trace_1",
+            label: "Repeated failure support trace",
+            excerpt: "I asked three times and this is still not fixed",
+          },
+        ],
+      },
+    ],
+    routingRules: [
+      {
+        intent: "Escalation",
+        model: "gpt-5.5",
+        fallback: "Human review",
+        qualityScore: 91,
+        estimatedCost: 0.035,
+        estimatedLatencyMs: 2200,
+        trafficShare: 12,
+        confidence: 0.79,
+        evidenceRefs: [
+          {
+            entityType: "trace",
+            entityId: "trace_1",
+            label: "Repeated failure support trace",
+          },
+        ],
+        calculationBasis: "Escalation traces are high risk and failed the baseline handoff case.",
+      },
+    ],
+    cacheRecommendations: [
+      {
+        title: "Move policy text before dynamic conversation context",
+        detail: "The static policy block can become a larger cacheable prefix.",
+        impact: "high",
+        estimatedMonthlySavings: 420,
+        confidence: 0.72,
+        evidenceRefs: [
+          {
+            entityType: "trace",
+            entityId: "trace_1",
+            label: "Repeated support policy pattern",
+          },
+        ],
+        calculationBasis: "Static policy text repeats across imported support traces.",
+      },
+    ],
+    failureClusters: [
+      {
+        label: "Escalation misses",
+        severity: "high",
+        issueCount: 1,
+        percent: 100,
+      },
+    ],
+    report: {
+      title: "Eval Debt Audit Report",
+      summary: "The workflow has a high-risk escalation gap.",
+      readinessScore: 62,
+      recommendations: ["Fix escalation handoff behavior before expanding traffic."],
+    },
+  };
+}
 
 function buildProject(): Project {
   return {

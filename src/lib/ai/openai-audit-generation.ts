@@ -26,6 +26,33 @@ const generatedCaseSchema = z.object({
   source: z.enum(["production", "synthetic", "requirements", "known_failure"]),
 });
 
+const evidenceRefSchema = z.object({
+  entityType: z.enum([
+    "trace",
+    "trace_import",
+    "eval_case",
+    "grader",
+    "eval_run",
+    "eval_result",
+    "human_label",
+    "calibration_result",
+    "issue",
+    "prompt_candidate",
+    "routing_rule",
+    "cache_recommendation",
+    "report",
+  ]),
+  entityId: z.string().min(1),
+  label: z.string().min(1),
+  excerpt: z.string().min(1).optional(),
+});
+
+const evidenceFieldsSchema = z.object({
+  confidence: z.number().min(0).max(1).optional(),
+  evidenceRefs: z.array(evidenceRefSchema).optional(),
+  calculationBasis: z.string().min(1).optional(),
+});
+
 export const openAIAuditOutputSchema = z.object({
   cases: z.array(generatedCaseSchema).min(1).max(80),
   issues: z.array(
@@ -49,10 +76,18 @@ export const openAIAuditOutputSchema = z.object({
   promptCandidates: z.array(
     z.object({
       title: z.string().min(1),
+      promptBody: z.string().min(1),
+      sourcePromptVersionId: z.string().min(1).optional(),
+      diffSummary: z.string().min(1).optional(),
       expectedQualityLift: z.number(),
       expectedCostDelta: z.number(),
+      expectedLatencyDeltaMs: z.number().optional(),
+      baselinePassRate: z.number().min(0).max(100).optional(),
+      candidatePassRate: z.number().min(0).max(100).optional(),
       regressionRisk: z.enum(["low", "medium", "high"]),
       explanation: z.string().min(1),
+      confidence: z.number().min(0).max(1).optional(),
+      evidenceRefs: z.array(evidenceRefSchema).optional(),
     }),
   ),
   routingRules: z.array(
@@ -64,7 +99,7 @@ export const openAIAuditOutputSchema = z.object({
       estimatedCost: z.number().min(0),
       estimatedLatencyMs: z.number().int().min(0),
       trafficShare: z.number().min(0).max(100),
-    }),
+    }).merge(evidenceFieldsSchema),
   ),
   cacheRecommendations: z.array(
     z.object({
@@ -72,7 +107,7 @@ export const openAIAuditOutputSchema = z.object({
       detail: z.string().min(1),
       impact: z.enum(["low", "medium", "high"]),
       estimatedMonthlySavings: z.number().min(0),
-    }),
+    }).merge(evidenceFieldsSchema),
   ),
   failureClusters: z.array(
     z.object({
@@ -222,6 +257,8 @@ export function buildOpenAIAuditPrompt({
         "Use redacted input and output only.",
         "Create starter eval cases, review issues, grader definitions, prompt candidates, routing rules, cache recommendations, failure clusters, and an executive report.",
         "Tie recommendations to quality, cost, latency, and regression risk where possible.",
+        "Generate evidence-backed prompt candidates with promptBody as the complete candidate prompt, sourcePromptVersionId when known, diffSummary, confidence from 0 to 1, and evidenceRefs pointing to supporting traces, eval cases, or issues.",
+        "Include evidenceRefs, confidence, and calculationBasis on routing rules and cache recommendations whenever the traces support the recommendation.",
       ],
       traces: traceSamples,
     },
@@ -274,9 +311,42 @@ export function mapParsedAuditOutput({
       agreement: grader.agreement,
       model: grader.model,
     })),
-    promptCandidates: output.promptCandidates,
-    routingRules: output.routingRules,
-    cacheRecommendations: output.cacheRecommendations,
+    promptCandidates: output.promptCandidates.map((candidate) => ({
+      title: candidate.title,
+      promptBody: candidate.promptBody || candidate.explanation,
+      sourcePromptVersionId: candidate.sourcePromptVersionId,
+      diffSummary: candidate.diffSummary,
+      expectedQualityLift: candidate.expectedQualityLift,
+      expectedCostDelta: candidate.expectedCostDelta,
+      expectedLatencyDeltaMs: candidate.expectedLatencyDeltaMs,
+      baselinePassRate: candidate.baselinePassRate,
+      candidatePassRate: candidate.candidatePassRate,
+      regressionRisk: candidate.regressionRisk,
+      explanation: candidate.explanation,
+      confidence: candidate.confidence,
+      evidenceRefs: candidate.evidenceRefs || [],
+    })),
+    routingRules: output.routingRules.map((rule) => ({
+      intent: rule.intent,
+      model: rule.model,
+      fallback: rule.fallback,
+      qualityScore: rule.qualityScore,
+      estimatedCost: rule.estimatedCost,
+      estimatedLatencyMs: rule.estimatedLatencyMs,
+      trafficShare: rule.trafficShare,
+      confidence: rule.confidence,
+      evidenceRefs: rule.evidenceRefs || [],
+      calculationBasis: rule.calculationBasis,
+    })),
+    cacheRecommendations: output.cacheRecommendations.map((recommendation) => ({
+      title: recommendation.title,
+      detail: recommendation.detail,
+      impact: recommendation.impact,
+      estimatedMonthlySavings: recommendation.estimatedMonthlySavings,
+      confidence: recommendation.confidence,
+      evidenceRefs: recommendation.evidenceRefs || [],
+      calculationBasis: recommendation.calculationBasis,
+    })),
     failureClusters: output.failureClusters,
     report: {
       summary: output.report.summary,
