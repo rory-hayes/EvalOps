@@ -233,7 +233,13 @@ class SupabaseEvallerStore implements EvallerStore {
         promptVersionId,
         now,
       });
-      await checked(this.db.from("ai_tests").insert(toAiTestRow(aiTest)));
+      // PostgREST writes are separate transactions, so create the prompt row before linking the active prompt FK.
+      await checked(
+        this.db.from("ai_tests").insert({
+          ...toAiTestRow(aiTest),
+          active_prompt_version_id: null,
+        }),
+      );
       await checked(
         this.db.from("ai_test_prompt_versions").insert(
           toPromptVersionRow({
@@ -247,6 +253,13 @@ class SupabaseEvallerStore implements EvallerStore {
             createdAt: now,
           }),
         ),
+      );
+      await checked(
+        this.db
+          .from("ai_tests")
+          .update({ active_prompt_version_id: promptVersionId, updated_at: now })
+          .eq("organization_id", organizationId)
+          .eq("id", aiTestId),
       );
       await checked(
         this.db.from("ai_test_scenarios").insert(
