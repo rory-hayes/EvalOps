@@ -1,5 +1,5 @@
-import { WorkspaceApp } from "@/components/workspace-app";
+import { redirect } from "next/navigation";
 
 export default function TraceImportPage() {
-  return <WorkspaceApp view="trace-import" />;
+  redirect("/workspace");
 }

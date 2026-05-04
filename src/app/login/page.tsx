@@ -1,5 +1,6 @@
 import { LockKeyhole, Mail } from "lucide-react";
 import { login, signup } from "./actions";
+import { resolveAuthRedirectPath } from "./redirects";
 import { hasSupabasePublicConfig } from "@/lib/supabase/config";
 
 type LoginPageProps = {
@@ -12,7 +13,7 @@ type LoginPageProps = {
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const params = (await searchParams) || {};
-  const next = params.next && params.next.startsWith("/") ? params.next : "";
+  const next = resolveAuthRedirectPath(params.next || "/workspace");
   const configured = hasSupabasePublicConfig();
 
   return (
@@ -26,15 +27,15 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
                 <span className="absolute bottom-0 left-0 h-5 w-5 rounded-full bg-sky-300 mix-blend-screen" />
                 <span className="absolute bottom-1 right-0 h-5 w-5 rounded-full bg-indigo-400 mix-blend-screen" />
               </div>
-              <span className="text-lg font-semibold">EvalOps Copilot</span>
+              <span className="text-lg font-semibold">Evaller</span>
             </div>
             <div className="mt-16 max-w-md">
               <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-200">Private MVP Access</p>
               <h1 className="mt-4 text-4xl font-semibold tracking-normal">
-                Sign in to review eval debt with persisted, traceable workflows.
+                Sign in to test support AI before release.
               </h1>
               <p className="mt-5 text-sm leading-6 text-slate-300">
-                Supabase Auth now owns sign-in and user identity. Workspace records, uploaded traces, review issues, exports, and audit events stay tied to your authenticated user.
+                Keep prompts, user scenarios, results, and prompt versions tied to your authenticated workspace.
               </p>
             </div>
           </section>
@@ -43,7 +44,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
             <div className="mx-auto max-w-md">
               <h2 className="text-2xl font-semibold">Welcome back</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">
-                Use your EvalOps account email and password. New private-test users can request access by signing up.
+                Use your Evaller account email and password. New private-test users can request access by signing up.
               </p>
 
               {params.error ? (

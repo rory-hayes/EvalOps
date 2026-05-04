@@ -12,14 +12,14 @@ type SignupPageProps = {
 };
 
 const setupPromises = [
-  "Create a saved Eval Debt Audit plan",
-  "Keep privacy posture explicit before upload",
-  "Move straight into trace import when ready",
+  "Create a saved support AI test workspace",
+  "Run realistic user scenarios against your prompt",
+  "Apply fixes and compare the next run",
 ];
 
 export default async function SignupPage({ searchParams }: SignupPageProps) {
   const params = (await searchParams) || {};
-  const next = resolveAuthRedirectPath(params.next || "/onboarding");
+  const next = resolveAuthRedirectPath(params.next || "/workspace");
   const configured = hasSupabasePublicConfig();
 
   return (
@@ -33,15 +33,15 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
                 <span className="absolute bottom-0 left-0 h-5 w-5 rounded-full bg-sky-300 mix-blend-screen" />
                 <span className="absolute bottom-1 right-0 h-5 w-5 rounded-full bg-indigo-400 mix-blend-screen" />
               </span>
-              <span className="text-lg font-semibold">EvalOps Copilot</span>
+              <span className="text-lg font-semibold">Evaller</span>
             </Link>
 
             <div className="mt-16 max-w-md">
               <h1 className="text-4xl font-semibold tracking-normal">
-                Create your EvalOps account
+                Create your Evaller account
               </h1>
               <p className="mt-5 text-sm leading-6 text-slate-300">
-                Start with a saved audit setup, then bring traces, prompts, requirements, and known failures into one focused Eval Debt Audit workflow.
+                Start with one focused loop: prompt, user scenarios, success criteria, results, fixes, and run history.
               </p>
               <div className="mt-7 grid gap-3">
                 {setupPromises.map((item) => (
@@ -59,9 +59,9 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
               <div className="inline-flex h-10 w-10 items-center justify-center rounded-[8px] bg-blue-50 text-blue-700 ring-1 ring-blue-100">
                 <ShieldCheck className="h-5 w-5" />
               </div>
-              <h2 className="mt-6 text-2xl font-semibold">Get started with your first audit</h2>
+              <h2 className="mt-6 text-2xl font-semibold">Get started with your first AI test</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">
-                Create an account to keep the setup answers, privacy choices, generated eval assets, and reports tied to your workspace.
+                Create an account to keep prompts, scenarios, results, and prompt versions tied to your workspace.
               </p>
 
               {params.error ? (

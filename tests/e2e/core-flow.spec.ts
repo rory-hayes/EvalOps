@@ -2,124 +2,64 @@ import { expect, test } from "@playwright/test";
 
 test.setTimeout(120_000);
 
-test("user completes Eval Debt Audit flow end to end", async ({ page }) => {
-  await page.goto("/projects");
-  await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
-  await page.getByRole("link", { name: /create audit plan/i }).click();
-  await expect(page).toHaveURL(/\/onboarding$/);
-  await page.getByRole("textbox", { name: "Project name" }).fill("Support Assistant Audit");
-  await page.getByRole("button", { name: /Support assistant/ }).click();
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByRole("textbox", { name: "Evaluation objective" }).fill("Measure end-to-end answer quality, escalation accuracy, and billing/refund reliability.");
-  await page.getByRole("button", { name: /Safe escalation/ }).click();
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByRole("button", { name: /Billing accuracy/ }).click();
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByRole("radio", { name: "Redact likely PII" }).check();
-  await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByText("Trace import next")).toBeVisible();
-  await page.getByRole("button", { name: "Create audit plan" }).click();
-  await expect(page).toHaveURL(/\/trace-import$/);
+test("user completes the Evaller improve and run-again loop", async ({ page }) => {
+  await page.goto("/workspace");
+  await expect(page.getByRole("heading", { name: "Workspace" })).toBeVisible();
+  await expect(page.getByText("AI Instructions")).toBeVisible();
 
-  await page.goto("/trace-import");
-  await expect(page.getByText("Schema mapping preview")).toBeVisible();
-  await expect(page.getByText("Redaction controls")).toBeVisible();
-  await page.locator('input[type="file"]').setInputFiles({
-    name: "support.csv",
-    mimeType: "text/csv",
-    buffer: Buffer.from(
-      "conversation_id,user_input,assistant_output\n" +
-        "c_1,I asked three times and this is still not fixed,Try restarting the app.",
-    ),
-  });
-  await expect(page.getByText("Selected: support.csv")).toBeVisible();
-  await page.getByRole("button", { name: /upload and process/i }).click();
-  await expect(page.getByText("completed").first()).toBeVisible();
-  await expect(page.getByText("Escalation").first()).toBeVisible();
-  await expect(page.getByText("Import progress")).toBeVisible();
+  await page.getByLabel("AI test name").fill("QA Audit Support Bot");
+  await page.getByLabel("What are you testing?").fill("Whether the support AI handles billing, privacy, and urgent setup issues before release.");
 
-  await page.goto("/eval-builder");
-  await expect(page.getByLabel("Filter eval cases")).toBeVisible();
-  await expect(page.getByText("Bulk tagging")).toBeVisible();
-  await expect(page.getByText("Inline case editing")).toBeVisible();
-  await expect(page.getByText("Escalation handoff missing")).toBeVisible();
-  await page.getByRole("textbox", { name: "Review comment" }).fill("Resolved during E2E review.");
-  await page.getByRole("button", { name: "Resolve" }).click();
-  await expect(page.getByText("resolved").first()).toBeVisible();
-  await expect(page.getByText("Resolved during E2E review.")).toBeVisible();
+  await page.getByLabel("AI instructions").fill(
+    [
+      "You are a support AI for a B2B SaaS product.",
+      "Be concise and helpful.",
+      "Do not invent account actions.",
+    ].join("\n"),
+  );
 
-  const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: /export csv/i }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toContain("support-assistant-audit");
+  await page.getByRole("button", { name: "Add user scenario" }).click();
+  await page.getByLabel("Scenario 4 title").fill("Refund escalation");
+  await page.getByLabel("Scenario 4 message").fill("I need a refund today because your product broke our launch.");
+  await page.getByLabel("Scenario 4 expected behavior").fill("Acknowledge urgency, avoid promising a refund, and offer human help.");
 
-  await page.goto("/graders");
-  await expect(page.getByText("Threshold configuration")).toBeVisible();
-  await expect(page.getByText("Calibration reference set")).toBeVisible();
-  await expect(page.getByLabel("Grader description")).toBeVisible();
-  await page.getByLabel("Grader description").fill("Score escalation quality against the paid pilot handoff rubric.");
-  await page.getByLabel("Judge model").fill("gpt-5.5");
-  await page.getByLabel("Active in audit runs").uncheck();
-  await page.getByRole("button", { name: /save grader config/i }).click();
-  await expect(page.getByText("paused").first()).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Rubric", exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Add success criterion" }).click();
+  await page.getByRole("textbox", { name: "Success criterion 5" }).fill("Asks one clarifying question when account details are missing");
+  await page.getByLabel("Quality bar value").fill("82");
 
-  await page.goto("/reports");
-  await expect(page.getByRole("heading", { name: "Audit Report", exact: true })).toBeVisible();
-  await expect(page.getByText("Executive summary")).toBeVisible();
-  await expect(page.getByText("Baseline scorecard")).toBeVisible();
-  await expect(page.getByText("Business impact opportunities")).toBeVisible();
-  const pdfDownloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: /export pdf/i }).click();
-  const pdfDownload = await pdfDownloadPromise;
-  expect(pdfDownload.suggestedFilename()).toContain("audit-report.pdf");
-  await expect(page.getByText("issue.resolved")).toBeVisible();
-  await expect(page.getByText("export.generated").first()).toBeVisible();
+  await page.getByLabel("AI instructions").fill("");
+  await expect(page.getByText("Add AI instructions before running.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run AI Test" })).toBeDisabled();
 
-  await page.goto("/prompt-optimizer");
-  await expect(page.getByText("Likely prompt issues")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Candidate prompt body" }).first()).toBeVisible();
-  await expect(page.getByText("Latency").first()).toBeVisible();
-  await page.getByRole("button", { name: "Promote candidate" }).first().click();
-  await expect(page.getByRole("dialog", { name: "Promote prompt candidate" })).toBeVisible();
-  await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.getByRole("dialog", { name: "Promote prompt candidate" })).toBeHidden();
+  await page.getByLabel("AI instructions").fill(
+    [
+      "You are a support AI for a B2B SaaS product.",
+      "Be concise and helpful.",
+      "Do not invent account actions.",
+    ].join("\n"),
+  );
+  await page.getByRole("button", { name: "Run AI Test" }).click();
+  await expect(page.getByText("AI test run completed.")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("Latest Result")).toBeVisible();
+  await expect(page.getByText("Failure patterns")).toBeVisible();
+  await expect(page.getByText("Suggested prompt fixes")).toBeVisible();
+  await expect(page.getByText("Failed").first()).toBeVisible();
 
-  await page.goto("/routing-caching");
-  await expect(page.getByText("High-risk route review")).toBeVisible();
-  await expect(page.getByText("Operational actions")).toBeVisible();
+  await page.getByRole("button", { name: "Apply fix" }).first().click();
+  await expect(page.getByText("Prompt fix applied. Run again to compare the next result.")).toBeVisible();
+  await expect(page.getByLabel("AI instructions")).toHaveValue(/Evaller improvement/);
 
-  await page.goto("/settings");
-  await expect(page.locator("span").filter({ hasText: /^PII redaction$/ })).toBeVisible();
-  await expect(page.locator("span").filter({ hasText: /^Short raw-data retention$/ })).toBeVisible();
-  await expect(page.locator("span").filter({ hasText: /^Store derived evals only$/ })).toBeVisible();
-  await expect(page.getByText("Data residency")).toBeVisible();
-  await page.getByLabel("Privacy posture").selectOption("derived_only");
-  await page.getByLabel("Project risks and goals").fill("Billing, Escalation, Privacy, Paid pilot");
-  await page.getByRole("button", { name: /save privacy settings/i }).click();
-  await expect(page.getByLabel("Privacy posture")).toHaveValue("derived_only");
-  await expect(page.getByRole("button", { name: /Export CSV/i })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Data Inventory" })).toBeVisible();
-  await expect(page.getByText("Raw uploads")).toBeVisible();
-  await expect(page.getByText("Raw traces")).toBeVisible();
-  await expect(page.getByText("Derived eval artifacts")).toBeVisible();
-  await expect(page.getByText("Audit / receipt records")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Retention Status" })).toBeVisible();
-  await expect(page.getByText("Derived-only mode keeps eval artifacts and safe metadata visible while raw trace content is minimized.")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Export History / Receipts" })).toBeVisible();
-  await expect(page.getByText("0 retained / 1 purged").first()).toBeVisible();
-  await expect(page.getByText("Eval pack CSV")).toBeVisible();
-  await expect(page.getByText("Audit report PDF")).toBeVisible();
-  await expect(page.getByRole("button", { name: /Full project export/i })).toBeEnabled();
-  await page.getByRole("button", { name: /Full project export/i }).click();
-  await expect(page.getByText("Full project JSON")).toBeVisible();
-  await expect(page.getByText("Full project export receipt")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Download" }).first()).toBeVisible();
-  await expect(page.getByRole("button", { name: /Delete project data/i })).toBeEnabled();
-  await page.getByRole("button", { name: /Delete project data/i }).click();
-  await expect(page.getByRole("dialog", { name: "Delete project data" })).toBeVisible();
-  await expect(page.getByText("Type Support Assistant Audit to confirm.")).toBeVisible();
-  await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.getByRole("dialog", { name: "Delete project data" })).toBeHidden();
-  await expect(page.getByRole("main").getByRole("button", { name: "Sign out" })).toBeVisible();
+  await page.getByRole("button", { name: "Run Again" }).click();
+  await expect(page.getByText("AI test run completed.")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/pass-rate change from the previous run/)).toBeVisible();
+
+  await page.getByRole("link", { name: "Runs" }).click();
+  await expect(page).toHaveURL(/\/runs$/);
+  await expect(page.getByRole("heading", { name: "Runs" })).toBeVisible();
+  await expect(page.getByText("Run History")).toBeVisible();
+  await expect(page.getByText("Prompt v2")).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByText("Run History")).toBeVisible();
+  await expect(page.getByText("Prompt v2")).toBeVisible();
 });

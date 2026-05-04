@@ -1,23 +1,13 @@
 import {
-  BarChart3,
-  ClipboardCheck,
-  FileText,
-  LockKeyhole,
-  Route,
-  ShieldCheck,
-  Sparkles,
-  UploadCloud,
-  Wrench,
+  History,
+  LayoutTemplate,
+  Settings,
+  TestTube2,
 } from "lucide-react";
 
 export const navItems = [
-  { label: "Dashboard", href: "/dashboard", icon: BarChart3 },
-  { label: "Projects", href: "/projects", icon: FileText },
-  { label: "Trace Import", href: "/trace-import", icon: UploadCloud },
-  { label: "Eval Builder", href: "/eval-builder", icon: Sparkles },
-  { label: "Graders", href: "/graders", icon: ShieldCheck },
-  { label: "Prompt Optimizer", href: "/prompt-optimizer", icon: Wrench },
-  { label: "Routing & Caching", href: "/routing-caching", icon: Route },
-  { label: "Reports", href: "/reports", icon: ClipboardCheck },
-  { label: "Settings", href: "/settings", icon: LockKeyhole },
+  { label: "Workspace", href: "/workspace", icon: TestTube2 },
+  { label: "Runs", href: "/runs", icon: History },
+  { label: "Templates", href: "/templates", icon: LayoutTemplate },
+  { label: "Settings", href: "/settings", icon: Settings },
 ];

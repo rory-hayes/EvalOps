@@ -1,15 +1,9 @@
-const DEFAULT_AUTH_REDIRECT = "/projects";
+const DEFAULT_AUTH_REDIRECT = "/workspace";
 
 const WORKSPACE_PATHS = [
-  "/onboarding",
-  "/dashboard",
-  "/projects",
-  "/trace-import",
-  "/eval-builder",
-  "/graders",
-  "/prompt-optimizer",
-  "/routing-caching",
-  "/reports",
+  "/workspace",
+  "/runs",
+  "/templates",
   "/settings",
 ];
 
@@ -17,7 +11,7 @@ export function resolveAuthRedirectPath(next: string) {
   if (!next.startsWith("/") || next.startsWith("//")) return DEFAULT_AUTH_REDIRECT;
 
   try {
-    const url = new URL(next, "https://evalops.local");
+    const url = new URL(next, "https://evaller.local");
     const pathname = url.pathname;
     const allowed = WORKSPACE_PATHS.some(
       (path) => pathname === path || pathname.startsWith(`${path}/`),

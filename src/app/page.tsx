@@ -1,5 +1,5 @@
-import { LandingPage } from "@/components/landing-page";
+import { redirect } from "next/navigation";
 
 export default function HomePage() {
-  return <LandingPage />;
+  redirect("/workspace");
 }

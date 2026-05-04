@@ -3,16 +3,16 @@ import { resolveAuthRedirectPath } from "./redirects";
 
 describe("auth redirects", () => {
   it("keeps post-auth redirects on real workspace routes", () => {
-    expect(resolveAuthRedirectPath("/projects")).toBe("/projects");
-    expect(resolveAuthRedirectPath("/onboarding")).toBe("/onboarding");
-    expect(resolveAuthRedirectPath("/trace-import")).toBe("/trace-import");
-    expect(resolveAuthRedirectPath("/dashboard?projectId=proj_1")).toBe("/dashboard?projectId=proj_1");
+    expect(resolveAuthRedirectPath("/workspace")).toBe("/workspace");
+    expect(resolveAuthRedirectPath("/runs")).toBe("/runs");
+    expect(resolveAuthRedirectPath("/templates")).toBe("/templates");
+    expect(resolveAuthRedirectPath("/settings")).toBe("/settings");
   });
 
-  it("normalizes signup and unsafe next paths to project setup", () => {
-    expect(resolveAuthRedirectPath("/signup")).toBe("/projects");
-    expect(resolveAuthRedirectPath("/login")).toBe("/projects");
-    expect(resolveAuthRedirectPath("//evil.example/projects")).toBe("/projects");
-    expect(resolveAuthRedirectPath("https://evil.example/projects")).toBe("/projects");
+  it("normalizes signup and unsafe next paths to workspace", () => {
+    expect(resolveAuthRedirectPath("/signup")).toBe("/workspace");
+    expect(resolveAuthRedirectPath("/login")).toBe("/workspace");
+    expect(resolveAuthRedirectPath("//evil.example/projects")).toBe("/workspace");
+    expect(resolveAuthRedirectPath("https://evil.example/projects")).toBe("/workspace");
   });
 });

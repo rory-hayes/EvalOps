@@ -1,5 +1,5 @@
-import { WorkspaceApp } from "@/components/workspace-app";
+import { EvallerApp } from "@/components/evaller/evaller-app";
 
 export default function SettingsPage() {
-  return <WorkspaceApp view="settings" />;
+  return <EvallerApp view="settings" />;
 }

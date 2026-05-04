@@ -29,7 +29,7 @@ export async function login(formData: FormData) {
 }
 
 export async function signup(formData: FormData) {
-  const next = resolveAuthRedirectPath(String(formData.get("next") || "/onboarding"));
+  const next = resolveAuthRedirectPath(String(formData.get("next") || "/workspace"));
   const errorPath = signupErrorPath(formData, next);
 
   if (!hasSupabasePublicConfig()) {
@@ -82,7 +82,7 @@ function redirectWithError(message: string, path = "/login"): never {
   redirect(`${path}${separator}error=${encodeURIComponent(message)}`);
 }
 
-function redirectWithMessage(message: string, next = "/projects"): never {
+function redirectWithMessage(message: string, next = "/workspace"): never {
   redirect(`/login?message=${encodeURIComponent(message)}&next=${encodeURIComponent(next)}`);
 }
 

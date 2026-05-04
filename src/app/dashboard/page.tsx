@@ -1,5 +1,5 @@
-import { WorkspaceApp } from "@/components/workspace-app";
+import { redirect } from "next/navigation";
 
 export default function DashboardPage() {
-  return <WorkspaceApp view="dashboard" />;
+  redirect("/workspace");
 }

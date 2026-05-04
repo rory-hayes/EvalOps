@@ -1,5 +1,5 @@
-import { WorkspaceApp } from "@/components/workspace-app";
+import { redirect } from "next/navigation";
 
 export default function RoutingCachingPage() {
-  return <WorkspaceApp view="routing-caching" />;
+  redirect("/workspace");
 }

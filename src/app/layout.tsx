@@ -15,9 +15,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "EvalOps Copilot",
+  title: "Evaller",
   description:
-    "Create, maintain, and improve high-quality AI evals for customer-facing AI workflows.",
+    "Run product-friendly AI tests for support AI prompts before release.",
 };
 
 export default function RootLayout({
