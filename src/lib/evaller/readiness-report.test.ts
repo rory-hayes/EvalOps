@@ -113,6 +113,7 @@ function runDetail(patch: Partial<EvallerRunDetail>): EvallerRunDetail {
     results: [],
     failurePatterns: [],
     promptSuggestions: [],
+    comments: [],
     ...patch,
   };
 }

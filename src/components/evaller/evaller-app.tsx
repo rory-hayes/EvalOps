@@ -7,8 +7,10 @@ import {
   ClipboardList,
   Copy,
   FileText,
+  GitCompareArrows,
   History,
   Loader2,
+  MessageSquare,
   Plus,
   RefreshCw,
   Save,
@@ -19,9 +21,12 @@ import {
   XCircle,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { clampQualityBarInput, normalizeQualityBarInput } from "@/lib/evaller/draft-validation";
 import { buildReadinessReport } from "@/lib/evaller/readiness-report";
 import type {
+  EvallerReadinessReportRecord,
+  EvallerReviewComment,
   EvallerRunDetail,
   EvallerRunSummary,
   EvallerWorkspace,
@@ -31,6 +36,7 @@ import { cn } from "@/lib/utils";
 
 type View = "workspace" | "runs" | "templates" | "settings";
 type BusyState = "loading" | "saving" | "running" | "applying" | null;
+type AutoSaveState = "saved" | "unsaved" | "saving" | "failed";
 
 type ApiEnvelope<T> = {
   ok: boolean;
@@ -83,19 +89,29 @@ export function EvallerApp({ view }: { view: View }) {
   const router = useRouter();
   const [workspace, setWorkspace] = useState<EvallerWorkspace | null>(null);
   const [draft, setDraft] = useState<EvallerWorkspaceInput | null>(null);
+  const [qualityBarInput, setQualityBarInput] = useState(String(SUPPORT_TEMPLATE.qualityBar));
   const [selectedRun, setSelectedRun] = useState<EvallerRunDetail | null>(null);
   const [busy, setBusy] = useState<BusyState>("loading");
+  const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>("saved");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const lastSavedDraftRef = useRef("");
+  const currentDraftRef = useRef("");
+  const autoSaveTimerRef = useRef<number | null>(null);
+  const qualityBarIssue = useMemo(() => normalizeQualityBarInput(qualityBarInput).issue, [qualityBarInput]);
 
   const loadWorkspace = useCallback(async () => {
     setBusy((current) => current || "loading");
     setError("");
     try {
       const payload = await api<EvallerWorkspace>("/api/evaller/workspace");
+      const input = workspaceToInput(payload);
       setWorkspace(payload);
-      setDraft(workspaceToInput(payload));
+      setDraft(input);
+      setQualityBarInput(String(input.qualityBar));
       setSelectedRun(payload.latestRun || null);
+      lastSavedDraftRef.current = serializeDraft(input);
+      setAutoSaveState("saved");
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Workspace could not be loaded.");
     } finally {
@@ -113,22 +129,35 @@ export function EvallerApp({ view }: { view: View }) {
     };
   }, [loadWorkspace]);
 
-  async function saveDraft(nextDraft = draft) {
+  async function saveDraft(nextDraft = draft, options: { quiet?: boolean } = {}) {
     if (!nextDraft) return null;
+    const requestKey = serializeDraft(nextDraft);
     setBusy("saving");
+    setAutoSaveState("saving");
     setError("");
-    setMessage("");
+    if (!options.quiet) setMessage("");
     try {
       const saved = await api<EvallerWorkspace>("/api/evaller/workspace", {
         method: "PUT",
         body: JSON.stringify(nextDraft),
       });
+      const input = workspaceToInput(saved);
+      if (options.quiet && currentDraftRef.current && currentDraftRef.current !== requestKey) {
+        setWorkspace(saved);
+        lastSavedDraftRef.current = requestKey;
+        setAutoSaveState("unsaved");
+        return saved;
+      }
       setWorkspace(saved);
-      setDraft(workspaceToInput(saved));
-      setMessage("Workspace saved.");
+      setDraft(input);
+      setQualityBarInput(String(input.qualityBar));
+      lastSavedDraftRef.current = serializeDraft(input);
+      setAutoSaveState("saved");
+      if (!options.quiet) setMessage("Workspace saved.");
       return saved;
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Workspace could not be saved.");
+      setAutoSaveState("failed");
       return null;
     } finally {
       setBusy(null);
@@ -137,7 +166,7 @@ export function EvallerApp({ view }: { view: View }) {
 
   async function runTest() {
     if (!draft) return;
-    const clientIssues = validateDraft(draft);
+    const clientIssues = [...validateDraft(draft), ...(qualityBarIssue ? [qualityBarIssue] : [])];
     if (clientIssues.length) {
       setError(clientIssues.join(" "));
       return;
@@ -195,6 +224,131 @@ export function EvallerApp({ view }: { view: View }) {
     }
   }
 
+  async function addReviewComment(runId: string, body: string) {
+    setBusy("saving");
+    setError("");
+    try {
+      const comment = await api<EvallerReviewComment>(`/api/evals/run/${runId}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ body }),
+      });
+      setSelectedRun((current) => current && current.id === runId
+        ? { ...current, comments: [comment, ...current.comments] }
+        : current);
+      setMessage("Review comment added.");
+    } catch (commentError) {
+      setError(commentError instanceof Error ? commentError.message : "Review comment could not be saved.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function updateReportApproval(runId: string, status: "approved" | "changes_requested", note?: string) {
+    setBusy("saving");
+    setError("");
+    try {
+      const report = await api<EvallerReadinessReportRecord>(`/api/evals/run/${runId}/readiness-report/approve`, {
+        method: "POST",
+        body: JSON.stringify({ status, note }),
+      });
+      updateSelectedRunReport(runId, report);
+      setMessage(status === "approved" ? "Readiness report approved." : "Changes requested for this release.");
+    } catch (approvalError) {
+      setError(approvalError instanceof Error ? approvalError.message : "Readiness report could not be updated.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function trackReportCopy(runId: string) {
+    const report = await api<EvallerReadinessReportRecord>(`/api/evals/run/${runId}/readiness-report/copy`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    updateSelectedRunReport(runId, report);
+    return report;
+  }
+
+  async function restorePromptVersion(promptVersionId: string) {
+    setBusy("saving");
+    setError("");
+    try {
+      const saved = await api<EvallerWorkspace>(`/api/evals/prompt-versions/${promptVersionId}/restore`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      const input = workspaceToInput(saved);
+      setWorkspace(saved);
+      setDraft(input);
+      setQualityBarInput(String(input.qualityBar));
+      lastSavedDraftRef.current = serializeDraft(input);
+      setAutoSaveState("saved");
+      setSelectedRun(saved.latestRun || selectedRun);
+      setMessage("Prompt version restored as a new active version.");
+    } catch (restoreError) {
+      setError(restoreError instanceof Error ? restoreError.message : "Prompt version could not be restored.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function inviteReviewer(email: string, role: "admin" | "member" | "reviewer") {
+    setBusy("saving");
+    setError("");
+    try {
+      await api<{ invitation: unknown; acceptUrl: string; token: string }>("/api/organizations/invitations", {
+        method: "POST",
+        body: JSON.stringify({ email, role }),
+      });
+      await loadWorkspace();
+      setMessage("Team invitation created.");
+    } catch (inviteError) {
+      setError(inviteError instanceof Error ? inviteError.message : "Team invitation could not be created.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function updateSelectedRunReport(runId: string, report: EvallerReadinessReportRecord) {
+    setSelectedRun((current) => current && current.id === runId ? { ...current, readinessReport: report } : current);
+    setWorkspace((current) => {
+      if (!current?.latestRun || current.latestRun.id !== runId) return current;
+      return { ...current, latestRun: { ...current.latestRun, readinessReport: report } };
+    });
+  }
+
+  useEffect(() => {
+    if (!draft) return;
+    const serialized = serializeDraft(draft);
+    currentDraftRef.current = serialized;
+    if (serialized === lastSavedDraftRef.current) {
+      setAutoSaveState((current) => current === "saving" ? current : "saved");
+      return;
+    }
+    setAutoSaveState("unsaved");
+    if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      void saveDraft(draft, { quiet: true });
+    }, 800);
+    return () => {
+      if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+    };
+    // Autosave is intentionally keyed to the serialized draft snapshot only.
+    // saveDraft receives that snapshot directly, so including it as a dependency would reschedule saves unnecessarily.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft]);
+
+  useEffect(() => {
+    const shouldWarn = autoSaveState === "unsaved" || autoSaveState === "saving" || autoSaveState === "failed";
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (!shouldWarn) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [autoSaveState]);
+
   if (busy === "loading" && !workspace) {
     return (
       <main className="min-h-[calc(100vh-80px)] px-4 py-8 lg:px-8">
@@ -209,7 +363,7 @@ export function EvallerApp({ view }: { view: View }) {
   if (!workspace || !draft) {
     return (
       <main className="min-h-[calc(100vh-80px)] px-4 py-8 lg:px-8">
-        <StatusMessage kind="error" message={error || "Workspace unavailable."} />
+        <LoadRecovery message={error || "Workspace unavailable."} onRefresh={loadWorkspace} busy={busy} />
       </main>
     );
   }
@@ -227,18 +381,29 @@ export function EvallerApp({ view }: { view: View }) {
             workspace={workspace}
             selectedRun={selectedRun}
             busy={busy}
+            autoSaveState={autoSaveState}
+            qualityBarInput={qualityBarInput}
+            qualityBarIssue={qualityBarIssue}
+            setQualityBarInput={setQualityBarInput}
             onSave={() => saveDraft()}
             onRun={runTest}
             onApplyFix={applyFix}
+            onCopyReport={trackReportCopy}
+            onAddComment={addReviewComment}
+            onUpdateApproval={updateReportApproval}
           />
         ) : view === "runs" ? (
           <RunsView
+            workspace={workspace}
             runs={workspace.runs}
             selectedRun={selectedRun}
             busy={busy}
             onOpenRun={openRun}
             onRunAgain={runTest}
             onApplyFix={applyFix}
+            onCopyReport={trackReportCopy}
+            onAddComment={addReviewComment}
+            onUpdateApproval={updateReportApproval}
           />
         ) : view === "templates" ? (
           <TemplatesView
@@ -251,7 +416,7 @@ export function EvallerApp({ view }: { view: View }) {
             }}
           />
         ) : (
-          <SettingsView workspace={workspace} />
+          <SettingsView workspace={workspace} busy={busy} onRestorePromptVersion={restorePromptVersion} onInviteReviewer={inviteReviewer} />
         )}
       </div>
     </main>
@@ -295,20 +460,34 @@ function WorkspaceView({
   workspace,
   selectedRun,
   busy,
+  autoSaveState,
+  qualityBarInput,
+  qualityBarIssue,
+  setQualityBarInput,
   onSave,
   onRun,
   onApplyFix,
+  onCopyReport,
+  onAddComment,
+  onUpdateApproval,
 }: {
   draft: EvallerWorkspaceInput;
   setDraft: (draft: EvallerWorkspaceInput) => void;
   workspace: EvallerWorkspace;
   selectedRun: EvallerRunDetail | null;
   busy: BusyState;
+  autoSaveState: AutoSaveState;
+  qualityBarInput: string;
+  qualityBarIssue: string;
+  setQualityBarInput: (value: string) => void;
   onSave: () => void;
   onRun: () => void;
   onApplyFix: (runId: string, suggestionId: string) => void;
+  onCopyReport: (runId: string) => Promise<EvallerReadinessReportRecord>;
+  onAddComment: (runId: string, body: string) => void;
+  onUpdateApproval: (runId: string, status: "approved" | "changes_requested", note?: string) => void;
 }) {
-  const clientIssues = validateDraft(draft);
+  const clientIssues = [...validateDraft(draft), ...(qualityBarIssue ? [qualityBarIssue] : [])];
   const latestRun = selectedRun || workspace.latestRun;
 
   return (
@@ -450,14 +629,18 @@ function WorkspaceView({
 
       <aside className="space-y-5">
         <Panel title="Quality Bar" detail="A scenario passes only when its score meets this bar." icon={Target}>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
             <input
               aria-label="Quality bar"
               type="range"
               min={50}
               max={100}
               value={draft.qualityBar}
-              onChange={(event) => setDraft({ ...draft, qualityBar: Number(event.target.value) })}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                setQualityBarInput(String(value));
+                setDraft({ ...draft, qualityBar: value });
+              }}
               className="w-full accent-blue-600"
             />
             <input
@@ -465,29 +648,63 @@ function WorkspaceView({
               type="number"
               min={50}
               max={100}
-              className="h-11 w-20 rounded-[8px] border border-slate-200 text-center text-sm font-semibold outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-              value={draft.qualityBar}
-              onChange={(event) => setDraft({ ...draft, qualityBar: Number(event.target.value) })}
+              className={cn(
+                "h-11 w-full rounded-[8px] border text-center text-sm font-semibold outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:w-24",
+                qualityBarIssue ? "border-red-300 bg-red-50 text-red-900" : "border-slate-200",
+              )}
+              value={qualityBarInput}
+              aria-invalid={Boolean(qualityBarIssue)}
+              aria-describedby={qualityBarIssue ? "quality-bar-error" : undefined}
+              onChange={(event) => {
+                const nextInput = event.target.value;
+                setQualityBarInput(nextInput);
+                const parsed = normalizeQualityBarInput(nextInput);
+                if (!parsed.issue && parsed.value !== null) {
+                  setDraft({ ...draft, qualityBar: parsed.value });
+                }
+              }}
+              onBlur={() => {
+                const clamped = clampQualityBarInput(qualityBarInput);
+                setQualityBarInput(String(clamped));
+                setDraft({ ...draft, qualityBar: clamped });
+              }}
             />
           </div>
-          <div className="mt-4 flex flex-wrap gap-2">
+          {qualityBarIssue ? <p id="quality-bar-error" className="mt-2 text-sm font-medium text-red-700">{qualityBarIssue}</p> : null}
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
             <button className="secondary-button" disabled={busy !== null} onClick={onSave}>
               <Save className="h-4 w-4" /> Save
             </button>
-            <button className="primary-button" disabled={busy !== null || clientIssues.length > 0} onClick={onRun}>
+            <button
+              className="primary-button"
+              disabled={busy !== null || clientIssues.length > 0}
+              aria-describedby={clientIssues.length ? "run-validation-message" : undefined}
+              onClick={onRun}
+            >
               {busy === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               Run AI Test
             </button>
+            <AutoSaveBadge state={autoSaveState} />
           </div>
           {clientIssues.length ? (
-            <div className="mt-4 rounded-[8px] border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-800">
+            <div id="run-validation-message" className="mt-4 rounded-[8px] border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-800">
               {clientIssues.join(" ")}
             </div>
           ) : null}
         </Panel>
 
         {latestRun ? (
-          <ResultsPanel run={latestRun} busy={busy} onRunAgain={onRun} onApplyFix={onApplyFix} />
+          <ResultsPanel
+            run={latestRun}
+            busy={busy}
+            context={latestRun.id === workspace.latestRun?.id ? "workspace" : "historical"}
+            canApprove={workspace.membershipRole === "owner" || workspace.membershipRole === "admin"}
+            onRunAgain={onRun}
+            onApplyFix={onApplyFix}
+            onCopyReport={onCopyReport}
+            onAddComment={onAddComment}
+            onUpdateApproval={onUpdateApproval}
+          />
         ) : (
           <Panel title="Results" detail="Run an AI test to see scenario scores, failures, and fixes." icon={History}>
             <div className="rounded-[8px] border border-dashed border-slate-300 bg-slate-50 p-6 text-sm leading-6 text-slate-600">
@@ -503,31 +720,62 @@ function WorkspaceView({
 function ResultsPanel({
   run,
   busy,
+  context,
+  canApprove,
   onRunAgain,
   onApplyFix,
+  onCopyReport,
+  onAddComment,
+  onUpdateApproval,
 }: {
   run: EvallerRunDetail;
   busy: BusyState;
+  context: "workspace" | "latest" | "historical";
+  canApprove: boolean;
   onRunAgain: () => void;
   onApplyFix: (runId: string, suggestionId: string) => void;
+  onCopyReport: (runId: string) => Promise<EvallerReadinessReportRecord>;
+  onAddComment: (runId: string, body: string) => void;
+  onUpdateApproval: (runId: string, status: "approved" | "changes_requested", note?: string) => void;
 }) {
   const delta = run.previousRun ? Math.round((run.passRate - run.previousRun.passRate) * 10) / 10 : null;
-  const report = buildReadinessReport(run);
+  const report = readinessReportForRun(run);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [commentBody, setCommentBody] = useState("");
+  const [approvalNote, setApprovalNote] = useState("");
 
   async function copyReport() {
     try {
       await navigator.clipboard.writeText(report.copyText);
+      await onCopyReport(run.id);
       setCopyState("copied");
-      window.setTimeout(() => setCopyState("idle"), 1800);
     } catch {
       setCopyState("failed");
     }
   }
 
   return (
-    <Panel title="Latest Result" detail="Review failures, apply a fix, then run again." icon={History}>
-      <div className="grid grid-cols-3 gap-3">
+    <Panel title={context === "workspace" ? "Latest Result" : "Selected Run"} detail="Review failures, apply a fix, then run again." icon={History}>
+      <div className="mb-4 rounded-[8px] border border-slate-200 bg-slate-50 p-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusBadge tone={context === "historical" ? "slate" : "blue"}>{context === "historical" ? "Historical" : "Latest"}</StatusBadge>
+              <StatusBadge tone={report.approvalStatus === "approved" ? "green" : report.approvalStatus === "changes_requested" ? "amber" : "slate"}>
+                {approvalLabel(report.approvalStatus)}
+              </StatusBadge>
+            </div>
+            <p className="mt-2 text-sm font-semibold text-slate-950">{run.promptVersionLabel}</p>
+            <p className="mt-1 text-xs text-slate-500">{new Date(run.startedAt).toLocaleString()}</p>
+          </div>
+          <div className="text-left sm:text-right">
+            <p className="text-xs font-medium text-slate-500">Viewed run</p>
+            <p className="mt-1 text-sm font-semibold text-slate-950">{run.passRate}% pass · {run.failedScenarios} failed</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Metric label="Pass rate" value={`${run.passRate}%`} tone={run.failedScenarios ? "warn" : "good"} />
         <Metric label="Average score" value={`${run.averageScore}`} />
         <Metric label="Failed" value={`${run.failedScenarios}/${run.totalScenarios}`} tone={run.failedScenarios ? "bad" : "good"} />
@@ -551,11 +799,16 @@ function ResultsPanel({
               <p className="mt-2 text-sm leading-6 text-blue-900">{report.summary}</p>
             </div>
           </div>
-          <button className="secondary-button shrink-0 bg-white" onClick={copyReport}>
+          <button className="primary-button shrink-0" onClick={copyReport}>
             <Copy className="h-4 w-4" />
             {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy report"}
           </button>
         </div>
+        {copyState === "copied" ? (
+          <div className="mt-3 rounded-[8px] border border-emerald-200 bg-emerald-50 p-3 text-sm font-medium text-emerald-800">
+            Report copied. Copy count: {report.copyCount + 1}.
+          </div>
+        ) : null}
         <dl className="mt-4 grid gap-3 text-sm">
           <ReadOnly label="Applied prompt" value={report.appliedPromptChange} />
           <ReadOnly label="Next step" value={report.recommendedNextStep} />
@@ -567,6 +820,79 @@ function ResultsPanel({
               <li key={risk}>{risk}</li>
             ))}
           </ul>
+        </div>
+      </div>
+
+      <div className="mt-5 rounded-[8px] border border-slate-200 bg-white p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-950">Release review</h3>
+            <p className="mt-1 text-sm leading-6 text-slate-600">
+              Comments and approvals stay attached to this exact run and prompt version.
+            </p>
+          </div>
+          <StatusBadge tone={report.approvalStatus === "approved" ? "green" : report.approvalStatus === "changes_requested" ? "amber" : "slate"}>
+            {approvalLabel(report.approvalStatus)}
+          </StatusBadge>
+        </div>
+        <textarea
+          aria-label="Review comment"
+          className="mt-4 min-h-20 w-full rounded-[8px] border border-slate-200 p-3 text-sm leading-6 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          value={commentBody}
+          onChange={(event) => setCommentBody(event.target.value)}
+          placeholder="Add a release review note for the team."
+        />
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <button
+            className="secondary-button"
+            disabled={busy !== null || !commentBody.trim()}
+            onClick={() => {
+              onAddComment(run.id, commentBody);
+              setCommentBody("");
+            }}
+          >
+            <MessageSquare className="h-4 w-4" />
+            Add comment
+          </button>
+          <input
+            aria-label="Approval note"
+            className="input sm:max-w-[280px]"
+            value={approvalNote}
+            onChange={(event) => setApprovalNote(event.target.value)}
+            placeholder="Optional approval note"
+          />
+          <button
+            className="primary-button"
+            disabled={busy !== null || !canApprove}
+            onClick={() => onUpdateApproval(run.id, "approved", approvalNote)}
+          >
+            <CheckCircle2 className="h-4 w-4" />
+            Approve
+          </button>
+          <button
+            className="secondary-button"
+            disabled={busy !== null || !canApprove}
+            onClick={() => onUpdateApproval(run.id, "changes_requested", approvalNote)}
+          >
+            <AlertTriangle className="h-4 w-4" />
+            Request changes
+          </button>
+        </div>
+        {!canApprove ? (
+          <p className="mt-2 text-xs leading-5 text-slate-500">Only owners and admins can approve release readiness reports.</p>
+        ) : null}
+        <div className="mt-4 space-y-2">
+          {run.comments.length ? run.comments.map((comment) => (
+            <div key={comment.id} className="rounded-[8px] bg-slate-50 p-3 text-sm leading-6 text-slate-700">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                <strong className="text-slate-800">{comment.actorUserId}</strong>
+                <span>{new Date(comment.createdAt).toLocaleString()}</span>
+              </div>
+              <p className="mt-1">{comment.body}</p>
+            </div>
+          )) : (
+            <p className="rounded-[8px] border border-dashed border-slate-300 p-3 text-sm text-slate-600">No review comments yet.</p>
+          )}
         </div>
       </div>
 
@@ -636,19 +962,27 @@ function ResultsPanel({
 }
 
 function RunsView({
+  workspace,
   runs,
   selectedRun,
   busy,
   onOpenRun,
   onRunAgain,
   onApplyFix,
+  onCopyReport,
+  onAddComment,
+  onUpdateApproval,
 }: {
+  workspace: EvallerWorkspace;
   runs: EvallerRunSummary[];
   selectedRun: EvallerRunDetail | null;
   busy: BusyState;
   onOpenRun: (runId: string) => void;
   onRunAgain: () => void;
   onApplyFix: (runId: string, suggestionId: string) => void;
+  onCopyReport: (runId: string) => Promise<EvallerReadinessReportRecord>;
+  onAddComment: (runId: string, body: string) => void;
+  onUpdateApproval: (runId: string, status: "approved" | "changes_requested", note?: string) => void;
 }) {
   return (
     <div className="grid gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
@@ -669,6 +1003,7 @@ function RunsView({
               </div>
               <p className="mt-2 text-xs leading-5 text-slate-600">{run.promptVersionLabel}</p>
               <p className="mt-1 text-xs text-slate-500">{run.failedScenarios} failed of {run.totalScenarios}</p>
+              {selectedRun?.id === run.id ? <p className="mt-2 text-xs font-semibold text-blue-700">Viewing this run</p> : null}
             </button>
           )) : (
             <div className="rounded-[8px] border border-dashed border-slate-300 p-5 text-sm text-slate-600">
@@ -678,7 +1013,17 @@ function RunsView({
         </div>
       </Panel>
       {selectedRun ? (
-        <ResultsPanel run={selectedRun} busy={busy} onRunAgain={onRunAgain} onApplyFix={onApplyFix} />
+        <ResultsPanel
+          run={selectedRun}
+          busy={busy}
+          context={selectedRun.id === workspace.latestRun?.id ? "latest" : "historical"}
+          canApprove={workspace.membershipRole === "owner" || workspace.membershipRole === "admin"}
+          onRunAgain={onRunAgain}
+          onApplyFix={onApplyFix}
+          onCopyReport={onCopyReport}
+          onAddComment={onAddComment}
+          onUpdateApproval={onUpdateApproval}
+        />
       ) : (
         <Panel title="Result Detail" detail="Select a run to inspect scenario results." icon={ClipboardList}>
           <div className="rounded-[8px] border border-dashed border-slate-300 p-8 text-sm text-slate-600">No run selected.</div>
@@ -709,18 +1054,32 @@ function TemplatesView({ busy, onApply }: { busy: BusyState; onApply: () => void
   );
 }
 
-function SettingsView({ workspace }: { workspace: EvallerWorkspace }) {
+function SettingsView({
+  workspace,
+  busy,
+  onRestorePromptVersion,
+  onInviteReviewer,
+}: {
+  workspace: EvallerWorkspace;
+  busy: BusyState;
+  onRestorePromptVersion: (promptVersionId: string) => void;
+  onInviteReviewer: (email: string, role: "admin" | "member" | "reviewer") => void;
+}) {
   return (
-    <div className="grid gap-5 lg:grid-cols-2">
-      <Panel title="Workspace" detail="Current saved AI test." icon={Target}>
-        <dl className="grid gap-3 text-sm">
-          <ReadOnly label="AI test" value={workspace.aiTest.name} />
-          <ReadOnly label="Active prompt" value={workspace.activePrompt.label} />
-          <ReadOnly label="User scenarios" value={String(workspace.scenarios.length)} />
-          <ReadOnly label="Success criteria" value={String(workspace.successCriteria.length)} />
-          <ReadOnly label="Quality bar" value={`${workspace.aiTest.qualityBar}/100`} />
-        </dl>
-      </Panel>
+    <div className="space-y-5">
+      <div className="grid gap-5 lg:grid-cols-2">
+        <Panel title="Workspace" detail="Current saved AI test." icon={Target}>
+          <dl className="grid gap-3 text-sm">
+            <ReadOnly label="AI test" value={workspace.aiTest.name} />
+            <ReadOnly label="Active prompt" value={workspace.activePrompt.label} />
+            <ReadOnly label="User scenarios" value={String(workspace.scenarios.length)} />
+            <ReadOnly label="Success criteria" value={String(workspace.successCriteria.length)} />
+            <ReadOnly label="Quality bar" value={`${workspace.aiTest.qualityBar}/100`} />
+          </dl>
+        </Panel>
+        <TeamReviewPanel workspace={workspace} busy={busy} onInviteReviewer={onInviteReviewer} />
+      </div>
+      <PromptVersionsPanel workspace={workspace} busy={busy} onRestorePromptVersion={onRestorePromptVersion} />
       <Panel title="AI + Privacy" detail="Customer API keys are never entered in the UI." icon={Sparkles}>
         <div className="space-y-3 text-sm leading-6 text-slate-700">
           <ReadOnly label="OpenAI credentials" value="Server-side only" />
@@ -728,11 +1087,143 @@ function SettingsView({ workspace }: { workspace: EvallerWorkspace }) {
           <ReadOnly label="Run storage" value="Saved to the authenticated workspace" />
           <ReadOnly label="Current release" value="Support AI prompt simulation" />
           <div className="rounded-[8px] border border-blue-100 bg-blue-50 p-3 text-blue-900">
-            Evaller stores prompts, scenarios, run results, and prompt versions so teams can track improvement over time.
+            Evaller stores prompts, scenarios, run results, readiness reports, comments, approvals, and prompt versions so teams can track improvement over time.
           </div>
         </div>
       </Panel>
     </div>
+  );
+}
+
+function TeamReviewPanel({
+  workspace,
+  busy,
+  onInviteReviewer,
+}: {
+  workspace: EvallerWorkspace;
+  busy: BusyState;
+  onInviteReviewer: (email: string, role: "admin" | "member" | "reviewer") => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<"admin" | "member" | "reviewer">("reviewer");
+
+  return (
+    <Panel title="Team Review" detail="Invite teammates and keep approvals tied to workspace roles." icon={MessageSquare}>
+      <div className="grid gap-3 text-sm">
+        <ReadOnly label="Your role" value={workspace.membershipRole} />
+        <ReadOnly label="Members" value={String(workspace.members.length)} />
+        <ReadOnly label="Pending invites" value={String(workspace.invitations.filter((invite) => invite.status === "pending").length)} />
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_140px_auto]">
+        <input
+          aria-label="Invite email"
+          className="input"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+          placeholder="teammate@example.com"
+        />
+        <select
+          aria-label="Invite role"
+          className="input"
+          value={role}
+          onChange={(event) => setRole(event.target.value as "admin" | "member" | "reviewer")}
+        >
+          <option value="reviewer">Reviewer</option>
+          <option value="member">Member</option>
+          <option value="admin">Admin</option>
+        </select>
+        <button
+          className="secondary-button"
+          disabled={busy !== null || !email.trim()}
+          onClick={() => {
+            onInviteReviewer(email, role);
+            setEmail("");
+          }}
+        >
+          Invite
+        </button>
+      </div>
+      <div className="mt-4 space-y-2">
+        {workspace.members.map((member) => (
+          <div key={member.id} className="flex flex-col gap-1 rounded-[8px] bg-slate-50 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <span className="font-medium text-slate-800">{member.userId}</span>
+            <StatusBadge tone={member.role === "owner" || member.role === "admin" ? "blue" : "slate"}>{member.role}</StatusBadge>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function PromptVersionsPanel({
+  workspace,
+  busy,
+  onRestorePromptVersion,
+}: {
+  workspace: EvallerWorkspace;
+  busy: BusyState;
+  onRestorePromptVersion: (promptVersionId: string) => void;
+}) {
+  const comparisonVersions = workspace.promptVersions.filter((prompt) => prompt.id !== workspace.activePrompt.id);
+  const [selectedPromptId, setSelectedPromptId] = useState(comparisonVersions[0]?.id || workspace.activePrompt.id);
+  const selectedPrompt = workspace.promptVersions.find((prompt) => prompt.id === selectedPromptId) || comparisonVersions[0] || workspace.activePrompt;
+  const diff = diffPromptLines(workspace.activePrompt.instructions, selectedPrompt.instructions);
+
+  return (
+    <Panel title="Prompt Versions" detail="Compare the active prompt against previous versions and restore without rewriting history." icon={GitCompareArrows}>
+      <div className="grid gap-3 lg:grid-cols-[280px_1fr]">
+        <div className="space-y-2">
+          {workspace.promptVersions.map((prompt) => (
+            <button
+              key={prompt.id}
+              className={cn(
+                "w-full rounded-[8px] border p-3 text-left text-sm transition",
+                prompt.id === selectedPrompt.id ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-white hover:bg-slate-50",
+              )}
+              onClick={() => setSelectedPromptId(prompt.id)}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-slate-950">{prompt.label}</span>
+                {prompt.id === workspace.activePrompt.id ? <StatusBadge tone="green">Active</StatusBadge> : null}
+              </div>
+              <p className="mt-1 text-xs text-slate-500">{new Date(prompt.createdAt).toLocaleString()}</p>
+            </button>
+          ))}
+        </div>
+        <div className="rounded-[8px] border border-slate-200 bg-slate-50 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-950">Compare with {selectedPrompt.label}</h3>
+              <p className="mt-1 text-xs text-slate-500">Green lines are active-prompt additions; red lines only exist in the selected version.</p>
+            </div>
+            <button
+              className="secondary-button"
+              disabled={busy !== null || selectedPrompt.id === workspace.activePrompt.id}
+              onClick={() => onRestorePromptVersion(selectedPrompt.id)}
+            >
+              <RefreshCw className="h-4 w-4" />
+              Restore as new active version
+            </button>
+          </div>
+          <div className="mt-4 grid gap-2 text-xs leading-5">
+            {diff.length ? diff.map((line) => (
+              <div
+                key={`${line.kind}-${line.text}`}
+                className={cn(
+                  "rounded-[7px] px-3 py-2 font-mono",
+                  line.kind === "added" ? "bg-emerald-50 text-emerald-800" : "bg-red-50 text-red-800",
+                )}
+              >
+                {line.kind === "added" ? "+ " : "- "}
+                {line.text}
+              </div>
+            )) : (
+              <p className="rounded-[8px] border border-dashed border-slate-300 p-3 text-sm text-slate-600">No line-level differences for this selection.</p>
+            )}
+          </div>
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -808,11 +1299,60 @@ function StatusMessage({ kind, message }: { kind: "success" | "error"; message: 
   );
 }
 
+function LoadRecovery({ message, onRefresh, busy }: { message: string; onRefresh: () => void; busy: BusyState }) {
+  return (
+    <div className="mx-auto flex min-h-[360px] max-w-2xl flex-col justify-center rounded-[8px] border border-red-200 bg-white p-6 shadow-sm">
+      <div className="flex items-start gap-3">
+        <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px] bg-red-50 text-red-700">
+          <AlertTriangle className="h-5 w-5" />
+        </span>
+        <div>
+          <h2 className="text-lg font-semibold text-slate-950">Workspace did not load</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{message}</p>
+          <p className="mt-2 text-sm leading-6 text-slate-500">
+            Try refreshing. If this keeps happening, share the time and account with support so the server request can be traced.
+          </p>
+        </div>
+      </div>
+      <button className="primary-button mt-5 w-fit" disabled={busy === "loading"} onClick={onRefresh}>
+        {busy === "loading" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+        Refresh
+      </button>
+    </div>
+  );
+}
+
+function AutoSaveBadge({ state }: { state: AutoSaveState }) {
+  const copy = {
+    saved: ["Saved", "green"],
+    unsaved: ["Unsaved", "amber"],
+    saving: ["Saving", "blue"],
+    failed: ["Save failed", "red"],
+  } as const;
+  const [label, tone] = copy[state];
+  return <StatusBadge tone={tone}>{label}</StatusBadge>;
+}
+
+function StatusBadge({ tone, children }: { tone: "blue" | "green" | "amber" | "red" | "slate"; children: React.ReactNode }) {
+  return (
+    <span className={cn(
+      "inline-flex min-h-7 items-center justify-center rounded-full px-2.5 text-xs font-semibold",
+      tone === "blue" ? "bg-blue-50 text-blue-700" :
+        tone === "green" ? "bg-emerald-50 text-emerald-700" :
+          tone === "amber" ? "bg-amber-50 text-amber-800" :
+            tone === "red" ? "bg-red-50 text-red-700" :
+              "bg-slate-100 text-slate-700",
+    )}>
+      {children}
+    </span>
+  );
+}
+
 function ReadOnly({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-4 rounded-[8px] border border-slate-200 bg-slate-50 px-3 py-2">
+    <div className="flex flex-col gap-1 rounded-[8px] border border-slate-200 bg-slate-50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
       <dt className="text-slate-500">{label}</dt>
-      <dd className="text-right font-semibold text-slate-900">{value}</dd>
+      <dd className="break-words font-semibold text-slate-900 sm:text-right">{value}</dd>
     </div>
   );
 }
@@ -861,15 +1401,77 @@ function validateDraft(draft: EvallerWorkspaceInput) {
   return issues;
 }
 
+function readinessReportForRun(run: EvallerRunDetail): EvallerReadinessReportRecord {
+  if (run.readinessReport) return run.readinessReport;
+  const report = buildReadinessReport(run);
+  return {
+    id: `derived_${run.id}`,
+    organizationId: run.organizationId,
+    aiTestId: run.aiTestId,
+    runId: run.id,
+    status: report.status,
+    approvalStatus: "pending",
+    summary: report.summary,
+    beforePassRate: run.previousRun?.passRate,
+    afterPassRate: run.passRate,
+    appliedPromptChange: report.appliedPromptChange,
+    remainingRisks: report.remainingRisks,
+    recommendedNextStep: report.recommendedNextStep,
+    copyText: report.copyText,
+    copyCount: 0,
+    createdAt: run.completedAt || run.startedAt,
+    updatedAt: run.completedAt || run.startedAt,
+  };
+}
+
+function approvalLabel(status: EvallerReadinessReportRecord["approvalStatus"]) {
+  if (status === "approved") return "Approved";
+  if (status === "changes_requested") return "Changes requested";
+  return "Pending review";
+}
+
+function diffPromptLines(active: string, selected: string) {
+  const activeLines = uniqueLines(active);
+  const selectedLines = uniqueLines(selected);
+  const added = activeLines
+    .filter((line) => !selectedLines.includes(line))
+    .map((text) => ({ kind: "added" as const, text }));
+  const removed = selectedLines
+    .filter((line) => !activeLines.includes(line))
+    .map((text) => ({ kind: "removed" as const, text }));
+  return [...added, ...removed];
+}
+
+function uniqueLines(value: string) {
+  return Array.from(new Set(value.split("\n").map((line) => line.trim()).filter(Boolean)));
+}
+
+function serializeDraft(draft: EvallerWorkspaceInput) {
+  return JSON.stringify(draft);
+}
+
 async function api<T>(path: string, init?: RequestInit) {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers || {}),
-    },
-    cache: "no-store",
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 12_000);
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...init,
+      headers: {
+        "content-type": "application/json",
+        ...(init?.headers || {}),
+      },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("The workspace request timed out. Refresh to try again.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
   const payload = (await response.json()) as ApiEnvelope<T>;
   if (!response.ok || !payload.ok) {
     const issueMessage = payload.error?.issues?.map((issue) => issue.message).join(" ");

@@ -3,6 +3,8 @@ import type {
   EvallerAiTest,
   EvallerFailurePattern,
   EvallerPromptSuggestion,
+  EvallerReadinessReportRecord,
+  EvallerReviewComment,
   EvallerPromptVersion,
   EvallerRunDetail,
   EvallerRunSummary,
@@ -178,12 +180,16 @@ export function buildRunDetail(
   failurePatterns: EvallerFailurePattern[],
   promptSuggestions: EvallerPromptSuggestion[],
   previousRun?: EvallerRunSummary,
+  readinessReport?: EvallerReadinessReportRecord,
+  comments: EvallerReviewComment[] = [],
 ): EvallerRunDetail {
   return {
     ...run,
     results,
     failurePatterns,
     promptSuggestions,
+    readinessReport,
+    comments,
     previousRun,
   };
 }

@@ -110,10 +110,64 @@ export type EvallerPromptSuggestion = {
   createdAt: string;
 };
 
+export type EvallerReadinessApprovalStatus = "pending" | "approved" | "changes_requested";
+
+export type EvallerReadinessReportRecord = {
+  id: string;
+  organizationId: string;
+  aiTestId: string;
+  runId: string;
+  status: "Ready for release review" | "Improved, needs follow-up" | "Not ready";
+  approvalStatus: EvallerReadinessApprovalStatus;
+  summary: string;
+  beforePassRate?: number;
+  afterPassRate: number;
+  appliedPromptChange: string;
+  remainingRisks: string[];
+  recommendedNextStep: string;
+  copyText: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  approvalNote?: string;
+  copyCount: number;
+  lastCopiedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type EvallerReviewComment = {
+  id: string;
+  organizationId: string;
+  aiTestId: string;
+  runId: string;
+  reportId?: string;
+  actorUserId: string;
+  body: string;
+  createdAt: string;
+};
+
+export type EvallerWorkspaceMember = {
+  id: string;
+  userId: string;
+  role: "owner" | "admin" | "member" | "reviewer";
+  createdAt: string;
+};
+
+export type EvallerWorkspaceInvitation = {
+  id: string;
+  email: string;
+  role: "admin" | "member" | "reviewer";
+  status: "pending" | "accepted" | "revoked" | "expired";
+  expiresAt: string;
+  createdAt: string;
+};
+
 export type EvallerRunDetail = EvallerRunSummary & {
   results: EvallerScenarioResult[];
   failurePatterns: EvallerFailurePattern[];
   promptSuggestions: EvallerPromptSuggestion[];
+  readinessReport?: EvallerReadinessReportRecord;
+  comments: EvallerReviewComment[];
   previousRun?: EvallerRunSummary;
 };
 
@@ -128,6 +182,9 @@ export type EvallerWorkspace = {
   scenarios: EvallerScenario[];
   successCriteria: EvallerSuccessCriterion[];
   runs: EvallerRunSummary[];
+  membershipRole: EvallerWorkspaceMember["role"];
+  members: EvallerWorkspaceMember[];
+  invitations: EvallerWorkspaceInvitation[];
   latestRun?: EvallerRunDetail;
 };
 
@@ -180,6 +237,10 @@ export type EvallerStore = {
   listRuns(actor: EvallerActor): Promise<EvallerRunSummary[]>;
   getRun(actor: EvallerActor, runId: string): Promise<EvallerRunDetail>;
   applyFix(actor: EvallerActor, runId: string, suggestionId: string): Promise<EvallerWorkspace>;
+  addReviewComment(actor: EvallerActor, runId: string, body: string): Promise<EvallerReviewComment>;
+  updateReadinessApproval(actor: EvallerActor, runId: string, input: { status: "approved" | "changes_requested"; note?: string }): Promise<EvallerReadinessReportRecord>;
+  trackReadinessReportCopy(actor: EvallerActor, runId: string): Promise<EvallerReadinessReportRecord>;
+  restorePromptVersion(actor: EvallerActor, promptVersionId: string): Promise<EvallerWorkspace>;
 };
 
 export type EvallerActor = {

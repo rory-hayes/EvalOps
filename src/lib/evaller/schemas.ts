@@ -26,6 +26,15 @@ export const applyFixRequestSchema = z.object({
   suggestionId: z.string().trim().min(1).max(120),
 });
 
+export const createReviewCommentRequestSchema = z.object({
+  body: z.string().trim().min(1).max(2000),
+});
+
+export const updateReadinessApprovalRequestSchema = z.object({
+  status: z.enum(["approved", "changes_requested"]),
+  note: z.string().trim().max(2000).optional(),
+});
+
 export function validateRunnableWorkspace(workspace: EvallerWorkspace) {
   const issues: string[] = [];
 

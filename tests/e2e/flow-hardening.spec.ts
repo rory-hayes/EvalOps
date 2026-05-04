@@ -45,8 +45,16 @@ test("validation guardrails keep incomplete AI tests from running", async ({ pag
 
   await page.reload();
   await page.getByLabel("Quality bar value").fill("101");
-  await expect(page.getByText("Set the quality bar between 50 and 100.")).toBeVisible();
+  await expect(page.getByText("Set the quality bar between 50 and 100.").first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Run AI Test" })).toBeDisabled();
+  await page.getByLabel("Quality bar value").blur();
+  await expect(page.getByLabel("Quality bar value")).toHaveValue("100");
+
+  await page.getByLabel("Quality bar value").fill("40");
+  await expect(page.getByText("Set the quality bar between 50 and 100.").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run AI Test" })).toBeDisabled();
+  await page.getByLabel("Quality bar value").blur();
+  await expect(page.getByLabel("Quality bar value")).toHaveValue("50");
 
   await page.reload();
   await page.getByLabel("Delete scenario 3").click();
@@ -62,6 +70,26 @@ test("validation guardrails keep incomplete AI tests from running", async ({ pag
   await page.getByLabel("Delete success criterion 1").click();
   await expect(page.getByText("Add at least one success criterion.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Run AI Test" })).toBeDisabled();
+});
+
+test("autosave preserves edited workspace inputs without a manual save", async ({ page }) => {
+  await useIsolatedWorkspace(page, "autosave-edits");
+  await page.goto("/workspace");
+  await expect(page.getByRole("heading", { name: "Workspace" })).toBeVisible();
+
+  const autosaveResponse = page.waitForResponse((response) =>
+    response.url().includes("/api/evaller/workspace") && response.request().method() === "PUT",
+  );
+  await page.getByLabel("AI test name").fill("Autosaved Support Bot");
+  await page.getByLabel("What are you testing?").fill("Whether unsaved edits survive refresh without a manual save.");
+  await page.getByLabel("AI instructions").fill("You are a support AI. Offer a human handoff for risky account actions.");
+  await autosaveResponse;
+  await expect(page.getByText("Saved")).toBeVisible({ timeout: 15_000 });
+
+  await page.reload();
+  await expect(page.getByLabel("AI test name")).toHaveValue("Autosaved Support Bot");
+  await expect(page.getByLabel("What are you testing?")).toHaveValue("Whether unsaved edits survive refresh without a manual save.");
+  await expect(page.getByLabel("AI instructions")).toHaveValue("You are a support AI. Offer a human handoff for risky account actions.");
 });
 
 test("value loop persists saved context, applied fixes, reruns, and prompt history", async ({ page }) => {
@@ -104,15 +132,37 @@ test("value loop persists saved context, applied fixes, reruns, and prompt histo
   await expect(page.getByRole("button", { name: "Apply fix" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Copy report" })).toBeVisible();
 
+  await page.getByLabel("Review comment").fill("Ready for support release review.");
+  await page.getByRole("button", { name: "Add comment" }).click();
+  await expect(page.getByText("Review comment added.")).toBeVisible();
+  await expect(page.getByText("Ready for support release review.")).toBeVisible();
+
+  await page.getByLabel("Approval note").fill("Approved for launch.");
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expect(page.getByText("Readiness report approved.")).toBeVisible();
+  await expect(page.getByText("Approved").first()).toBeVisible();
+
   await page.reload();
   await expect(page.getByText("+100% pass-rate change from the previous run.")).toBeVisible();
   await expect(page.getByText("No open scenario failures in the latest run.")).toBeVisible();
+  await expect(page.getByText("Approved").first()).toBeVisible();
+  await expect(page.getByText("Ready for support release review.")).toBeVisible();
 
   await page.getByRole("link", { name: "Runs" }).click();
   await expect(page.getByText("Run History")).toBeVisible();
   await expect(page.getByText("Prompt v2: Add explicit support handoff and safety rules").first()).toBeVisible();
   await expect(page.getByText("Prompt v1")).toBeVisible();
   await expect(page.getByText("AI Release Readiness Report")).toBeVisible();
+  await expect(page.getByText("Selected Run")).toBeVisible();
+
+  await page.getByRole("link", { name: "Settings" }).click();
+  await expect(page.getByRole("heading", { name: "Prompt Versions" })).toBeVisible();
+  await page.getByText("Prompt v1").first().click();
+  await expect(page.getByText("Compare with Prompt v1")).toBeVisible();
+  await expect(page.getByText(/Acknowledge user frustration or urgency before solving/)).toBeVisible();
+  await page.getByRole("button", { name: "Restore as new active version" }).click();
+  await expect(page.getByText("Prompt version restored as a new active version.")).toBeVisible();
+  await expect(page.getByText("Prompt v3: Restore Prompt v1").first()).toBeVisible();
 });
 
 test("transient API failures are visible and recoverable", async ({ page }) => {
@@ -126,7 +176,7 @@ test("transient API failures are visible and recoverable", async ({ page }) => {
   await expect(page.getByText("Simulated workspace outage.")).toBeVisible();
 
   await page.unroute("**/api/evaller/workspace", workspaceFailure);
-  await page.getByRole("button", { name: "Refresh" }).click();
+  await page.getByText("Refresh", { exact: true }).click();
   await expect(page.getByRole("heading", { name: "Workspace" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Run AI Test" })).toBeEnabled();
 
@@ -179,4 +229,6 @@ test("mobile users can complete the run, fix, rerun, and history flow", async ({
   await expect(page.getByRole("heading", { name: "Runs" })).toBeVisible();
   await expect(page.getByText("Prompt v2: Add explicit support handoff and safety rules").first()).toBeVisible();
   await expect(page.getByText("Ready for release review")).toBeVisible();
+  const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+  expect(hasHorizontalOverflow).toBe(false);
 });

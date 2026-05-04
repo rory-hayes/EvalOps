@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ApiError } from "@/lib/server/auth";
+import { getEvalOpsStore } from "@/lib/server/store";
 import { runEvallerAiTest } from "./ai";
 import {
   DEFAULT_EVALLER_PROMPT,
@@ -11,12 +12,15 @@ import {
   buildRunDetail,
   buildRunSummary,
 } from "./logic";
+import { buildReadinessReportRecord } from "./readiness-report";
 import { validateRunnableWorkspace } from "./schemas";
 import type {
   EvallerActor,
   EvallerAiTest,
   EvallerPromptSuggestion,
   EvallerPromptVersion,
+  EvallerReadinessReportRecord,
+  EvallerReviewComment,
   EvallerRunDetail,
   EvallerRunSummary,
   EvallerScenario,
@@ -36,6 +40,8 @@ type LocalWorkspaceRecords = {
   results: EvallerScenarioResult[];
   failurePatterns: EvallerRunDetail["failurePatterns"];
   promptSuggestions: EvallerPromptSuggestion[];
+  readinessReports: EvallerReadinessReportRecord[];
+  reviewComments: EvallerReviewComment[];
 };
 
 type LocalEvallerState = {
@@ -53,7 +59,7 @@ class LocalEvallerStore implements EvallerStore {
     const state = await this.load();
     const records = this.ensureRecords(state, actor);
     await this.save(state);
-    return this.toWorkspace(actor, records);
+    return this.toWorkspace(actor, records, await resolveWorkspaceContext(actor));
   }
 
   async saveWorkspace(actor: EvallerActor, input: EvallerWorkspaceInput) {
@@ -61,14 +67,15 @@ class LocalEvallerStore implements EvallerStore {
     const records = this.ensureRecords(state, actor);
     applyWorkspaceInput(records, input, actor, makeId);
     await this.save(state);
-    return this.toWorkspace(actor, records);
+    return this.toWorkspace(actor, records, await resolveWorkspaceContext(actor));
   }
 
   async runTest(actor: EvallerActor, input: EvallerWorkspaceInput) {
     const state = await this.load();
     const records = this.ensureRecords(state, actor);
+    const context = await resolveWorkspaceContext(actor);
     applyWorkspaceInput(records, input, actor, makeId);
-    const workspace = this.toWorkspace(actor, records);
+    const workspace = this.toWorkspace(actor, records, context);
     const validation = validateRunnableWorkspace(workspace);
     if (!validation.ok) {
       throw new ApiError(400, validation.issues.join(" "), "invalid_ai_test");
@@ -122,8 +129,15 @@ class LocalEvallerStore implements EvallerStore {
       records.results = [...artifacts.results, ...records.results];
       records.failurePatterns = [...artifacts.failurePatterns, ...records.failurePatterns];
       records.promptSuggestions = [...artifacts.promptSuggestions, ...records.promptSuggestions];
+      const detail = buildRunDetail(completedRun, artifacts.results, artifacts.failurePatterns, artifacts.promptSuggestions, previousRun);
+      const report = buildReadinessReportRecord({
+        id: makeId("readiness_report"),
+        run: detail,
+        now,
+      });
+      records.readinessReports = [report, ...records.readinessReports];
       await this.save(state);
-      return buildRunDetail(completedRun, artifacts.results, artifacts.failurePatterns, artifacts.promptSuggestions, previousRun);
+      return buildRunDetail(completedRun, artifacts.results, artifacts.failurePatterns, artifacts.promptSuggestions, previousRun, report, []);
     } catch (error) {
       runShell.status = "failed";
       runShell.errorMessage = error instanceof Error ? error.message : "AI test run failed.";
@@ -156,7 +170,7 @@ class LocalEvallerStore implements EvallerStore {
 
     if (suggestion.appliedPromptVersionId) {
       await this.save(state);
-      return this.toWorkspace(actor, records);
+      return this.toWorkspace(actor, records, await resolveWorkspaceContext(actor));
     }
 
     const now = new Date().toISOString();
@@ -181,10 +195,90 @@ class LocalEvallerStore implements EvallerStore {
     suggestion.appliedAt = now;
     suggestion.appliedPromptVersionId = promptVersion.id;
     await this.save(state);
-    return this.toWorkspace(actor, records);
+    return this.toWorkspace(actor, records, await resolveWorkspaceContext(actor));
   }
 
-  private toWorkspace(actor: EvallerActor, records: LocalWorkspaceRecords): EvallerWorkspace {
+  async addReviewComment(actor: EvallerActor, runId: string, body: string) {
+    const state = await this.load();
+    const records = this.ensureRecords(state, actor);
+    const run = records.runs.find((item) => item.id === runId);
+    if (!run) throw new ApiError(404, "AI test run not found.", "run_not_found");
+    const report = this.ensureReadinessReport(records, run);
+    const comment: EvallerReviewComment = {
+      id: makeId("review_comment"),
+      organizationId: records.aiTest.organizationId,
+      aiTestId: records.aiTest.id,
+      runId,
+      reportId: report.id,
+      actorUserId: actor.userId,
+      body: body.trim(),
+      createdAt: new Date().toISOString(),
+    };
+    records.reviewComments.unshift(comment);
+    await this.save(state);
+    return comment;
+  }
+
+  async updateReadinessApproval(actor: EvallerActor, runId: string, input: { status: "approved" | "changes_requested"; note?: string }) {
+    const context = await resolveWorkspaceContext(actor);
+    assertCanApprove(context.membershipRole);
+    const state = await this.load();
+    const records = this.ensureRecords(state, actor);
+    const run = records.runs.find((item) => item.id === runId);
+    if (!run) throw new ApiError(404, "AI test run not found.", "run_not_found");
+    const report = this.ensureReadinessReport(records, run);
+    const now = new Date().toISOString();
+    report.approvalStatus = input.status;
+    report.approvedBy = actor.userId;
+    report.approvedAt = now;
+    report.approvalNote = input.note?.trim() || undefined;
+    report.updatedAt = now;
+    await this.save(state);
+    return report;
+  }
+
+  async trackReadinessReportCopy(actor: EvallerActor, runId: string) {
+    const state = await this.load();
+    const records = this.ensureRecords(state, actor);
+    const run = records.runs.find((item) => item.id === runId);
+    if (!run) throw new ApiError(404, "AI test run not found.", "run_not_found");
+    const report = this.ensureReadinessReport(records, run);
+    const now = new Date().toISOString();
+    report.copyCount += 1;
+    report.lastCopiedAt = now;
+    report.updatedAt = now;
+    await this.save(state);
+    return report;
+  }
+
+  async restorePromptVersion(actor: EvallerActor, promptVersionId: string) {
+    const state = await this.load();
+    const records = this.ensureRecords(state, actor);
+    const source = records.promptVersions.find((prompt) => prompt.id === promptVersionId);
+    if (!source) throw new ApiError(404, "Prompt version not found.", "prompt_version_not_found");
+    const now = new Date().toISOString();
+    records.promptVersions.forEach((prompt) => {
+      prompt.isActive = false;
+    });
+    const nextVersion = Math.max(...records.promptVersions.map((prompt) => prompt.version), 0) + 1;
+    const promptVersion: EvallerPromptVersion = {
+      id: makeId("prompt"),
+      aiTestId: records.aiTest.id,
+      organizationId: records.aiTest.organizationId,
+      version: nextVersion,
+      label: `Prompt v${nextVersion}: Restore ${source.label}`,
+      instructions: source.instructions,
+      isActive: true,
+      createdAt: now,
+    };
+    records.promptVersions.unshift(promptVersion);
+    records.aiTest.activePromptVersionId = promptVersion.id;
+    records.aiTest.updatedAt = now;
+    await this.save(state);
+    return this.toWorkspace(actor, records, await resolveWorkspaceContext(actor));
+  }
+
+  private toWorkspace(actor: EvallerActor, records: LocalWorkspaceRecords, context: EvallerWorkspaceContext): EvallerWorkspace {
     const activePrompt =
       records.promptVersions.find((prompt) => prompt.id === records.aiTest.activePromptVersionId) ||
       records.promptVersions.find((prompt) => prompt.isActive) ||
@@ -202,6 +296,9 @@ class LocalEvallerStore implements EvallerStore {
       scenarios: [...records.scenarios].sort((a, b) => a.sortOrder - b.sortOrder),
       successCriteria: [...records.successCriteria].sort((a, b) => a.sortOrder - b.sortOrder),
       runs: records.runs,
+      membershipRole: context.membershipRole,
+      members: context.members,
+      invitations: context.invitations,
       latestRun,
     };
   }
@@ -213,7 +310,31 @@ class LocalEvallerStore implements EvallerStore {
       records.failurePatterns.filter((pattern) => pattern.runId === run.id),
       records.promptSuggestions.filter((suggestion) => suggestion.runId === run.id),
       run.previousRunId ? records.runs.find((item) => item.id === run.previousRunId) : undefined,
+      records.readinessReports.find((report) => report.runId === run.id) || this.buildDerivedReadinessReport(records, run),
+      records.reviewComments.filter((comment) => comment.runId === run.id),
     );
+  }
+
+  private ensureReadinessReport(records: LocalWorkspaceRecords, run: EvallerRunSummary) {
+    const existing = records.readinessReports.find((report) => report.runId === run.id);
+    if (existing) return existing;
+    const report = this.buildDerivedReadinessReport(records, run);
+    records.readinessReports.unshift(report);
+    return report;
+  }
+
+  private buildDerivedReadinessReport(records: LocalWorkspaceRecords, run: EvallerRunSummary) {
+    return buildReadinessReportRecord({
+      id: makeId("readiness_report"),
+      run: buildRunDetail(
+        run,
+        records.results.filter((result) => result.runId === run.id),
+        records.failurePatterns.filter((pattern) => pattern.runId === run.id),
+        records.promptSuggestions.filter((suggestion) => suggestion.runId === run.id),
+        run.previousRunId ? records.runs.find((item) => item.id === run.previousRunId) : undefined,
+      ),
+      now: run.completedAt || run.startedAt,
+    });
   }
 
   private ensureRecords(state: LocalEvallerState, actor: EvallerActor) {
@@ -268,8 +389,12 @@ class LocalEvallerStore implements EvallerStore {
         results: [],
         failurePatterns: [],
         promptSuggestions: [],
+        readinessReports: [],
+        reviewComments: [],
       };
     }
+    state.workspaces[key].readinessReports ||= [];
+    state.workspaces[key].reviewComments ||= [];
     return state.workspaces[key];
   }
 
@@ -331,6 +456,40 @@ export function applyWorkspaceInput(
 
 function workspaceKey(actor: EvallerActor) {
   return actor.organizationId || `org_${actor.userId}`;
+}
+
+type EvallerWorkspaceContext = {
+  membershipRole: EvallerWorkspace["membershipRole"];
+  members: EvallerWorkspace["members"];
+  invitations: EvallerWorkspace["invitations"];
+};
+
+async function resolveWorkspaceContext(actor: EvallerActor): Promise<EvallerWorkspaceContext> {
+  const store = await getEvalOpsStore();
+  const workspace = await store.ensureWorkspace(actor);
+  return {
+    membershipRole: workspace.membership.role,
+    members: workspace.members.map((member) => ({
+      id: member.id,
+      userId: member.userId,
+      role: member.role,
+      createdAt: member.createdAt,
+    })),
+    invitations: workspace.invitations.map((invitation) => ({
+      id: invitation.id,
+      email: invitation.email,
+      role: invitation.role,
+      status: invitation.status,
+      expiresAt: invitation.expiresAt,
+      createdAt: invitation.createdAt,
+    })),
+  };
+}
+
+function assertCanApprove(role: EvallerWorkspace["membershipRole"]) {
+  if (role !== "owner" && role !== "admin") {
+    throw new ApiError(403, "Your role does not allow approving release readiness reports.", "forbidden");
+  }
 }
 
 function makeId(prefix: string) {

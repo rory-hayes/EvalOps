@@ -87,5 +87,8 @@ function buildWorkspace(overrides: {
       },
     ],
     runs: [],
+    membershipRole: "owner",
+    members: [],
+    invitations: [],
   };
 }

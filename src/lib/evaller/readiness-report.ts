@@ -1,4 +1,4 @@
-import type { EvallerRunDetail } from "./types";
+import type { EvallerReadinessReportRecord, EvallerRunDetail } from "./types";
 
 export type EvallerReadinessStatus =
   | "Ready for release review"
@@ -37,6 +37,33 @@ export function buildReadinessReport(run: EvallerRunDetail): EvallerReadinessRep
       ...remainingRisks.map((risk) => `- ${risk}`),
       `Recommended next step: ${recommendedNextStep}`,
     ].join("\n"),
+  };
+}
+
+export function buildReadinessReportRecord(input: {
+  id: string;
+  run: EvallerRunDetail;
+  now: string;
+}): EvallerReadinessReportRecord {
+  const report = buildReadinessReport(input.run);
+
+  return {
+    id: input.id,
+    organizationId: input.run.organizationId,
+    aiTestId: input.run.aiTestId,
+    runId: input.run.id,
+    status: report.status,
+    approvalStatus: "pending",
+    summary: report.summary,
+    beforePassRate: input.run.previousRun?.passRate,
+    afterPassRate: input.run.passRate,
+    appliedPromptChange: report.appliedPromptChange,
+    remainingRisks: report.remainingRisks,
+    recommendedNextStep: report.recommendedNextStep,
+    copyText: report.copyText,
+    copyCount: 0,
+    createdAt: input.now,
+    updatedAt: input.now,
   };
 }
 
