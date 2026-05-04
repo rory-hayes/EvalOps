@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  ClipboardCheck,
   CreditCard,
   Download,
   FileJson,
@@ -18,6 +19,7 @@ import {
   UploadCloud,
   Users,
 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Card, PageHeader, ProgressBar, type Tone } from "@/components/primitives";
 import { formatEvidenceCount, normalizeCalculationBasis, normalizeConfidenceText } from "@/lib/domain/evidence";
@@ -281,102 +283,58 @@ function ProjectsView({
   busy: string | null;
   mutate: MutateFn;
 }) {
-  const [form, setForm] = useState({
-    name: "Support Assistant Audit",
-    workflowType: "support_assistant",
-    objective: "Measure end-to-end answer quality, escalation accuracy, and billing/refund reliability.",
-    riskPreferences: "Billing, Escalation, Privacy",
-    primaryGoals: "Answer quality, safe escalation, refund accuracy",
-    privacyMode: "redact_pii",
-  });
-  const generatedPreview = [
-    "Intent taxonomy and coverage map",
-    "Golden, regression, edge, and safety eval cases",
-    "Deterministic and judge-style grader pack",
-    "Prompt, routing, caching, and executive report draft",
-  ];
-
   return (
     <>
       <PageHeader
         title="Projects"
-        description="Create a tenant-scoped project. Creation writes organization, membership, project, optimization seed, and audit records."
+        description="Create and open tenant-scoped Eval Debt Audit projects."
         meta={<ProjectMeta state={state} />}
       />
       <div className="grid gap-4 xl:grid-cols-[1fr_460px]">
-        <Card className="p-5">
-          <h2 className="text-lg font-semibold text-slate-950">Create New Project</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-600">
-            Define the audit boundary, quality goals, and privacy posture before any traces are retained.
-          </p>
-          <form
-            className="mt-5 grid gap-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              mutate("create-project", async () => {
-                const created = await api<{ id: string }>("/api/projects", {
-                  method: "POST",
-                  body: JSON.stringify({
-                    ...form,
-                    riskPreferences: [
-                      ...form.riskPreferences.split(","),
-                      ...form.primaryGoals.split(","),
-                    ].map((item) => item.trim()).filter(Boolean),
-                  }),
-                });
-                return created;
-              }, (created) => created.id);
-            }}
-          >
-            <Field label="Project name" value={form.name} onChange={(name) => setForm({ ...form, name })} />
-            <SelectField
-              label="Workflow type"
-              value={form.workflowType}
-              onChange={(workflowType) => setForm({ ...form, workflowType })}
-              options={[
-                ["support_assistant", "Support Assistant"],
-                ["rag", "RAG Knowledge Assistant"],
-                ["tool_agent", "Tool-Using Agent"],
-                ["document_extraction", "Document Extraction"],
-                ["custom", "Custom"],
-              ]}
-            />
-            <label className="block">
-              <span className="text-sm font-semibold text-slate-700">Evaluation objective</span>
-              <textarea
-                className="mt-2 min-h-28 w-full rounded-[7px] border border-slate-200 p-3 text-sm leading-6"
-                value={form.objective}
-                onChange={(event) => setForm({ ...form, objective: event.target.value })}
-              />
-            </label>
-            <Field label="Primary risks" value={form.riskPreferences} onChange={(riskPreferences) => setForm({ ...form, riskPreferences })} />
-            <Field label="Primary goals" value={form.primaryGoals} onChange={(primaryGoals) => setForm({ ...form, primaryGoals })} />
-            <SelectField
-              label="Privacy preference"
-              value={form.privacyMode}
-              onChange={(privacyMode) => setForm({ ...form, privacyMode })}
-              options={[
-                ["redact_pii", "Redact likely PII"],
-                ["short_retention", "Short raw-data retention"],
-                ["derived_only", "Store derived evals only"],
-              ]}
-            />
-            <div className="rounded-[8px] border border-slate-200 bg-slate-50 p-4">
-              <h3 className="text-sm font-semibold text-slate-900">What EvalOps will generate</h3>
-              <div className="mt-3 grid gap-2">
-                {generatedPreview.map((item) => (
-                  <div key={item} className="flex items-start gap-2 text-sm leading-6 text-slate-700">
+        <Card className="overflow-hidden">
+          <div className="grid gap-0 lg:grid-cols-[1fr_300px]">
+            <div className="p-5 sm:p-6">
+              <span className="inline-flex h-10 w-10 items-center justify-center rounded-[8px] bg-blue-50 text-blue-700 ring-1 ring-blue-100">
+                <ClipboardCheck className="h-5 w-5" />
+              </span>
+              <h2 className="mt-5 text-2xl font-semibold tracking-normal text-slate-950">
+                Create a new Eval Debt Audit
+              </h2>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
+                Use the guided setup to define the workflow, success criteria, risk profile, and privacy posture before importing traces.
+              </p>
+              <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                {["Workflow", "Quality goals", "Privacy"].map((item) => (
+                  <div key={item} className="rounded-[8px] border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-xs font-semibold text-slate-500">Setup input</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-950">{item}</p>
+                  </div>
+                ))}
+              </div>
+              <Link
+                href="/onboarding"
+                className="mt-6 inline-flex h-11 items-center justify-center gap-2 rounded-[7px] bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-700"
+              >
+                <Plus className="h-4 w-4" />
+                Create audit plan
+              </Link>
+            </div>
+            <div className="border-t border-slate-200 bg-slate-50 p-5 lg:border-l lg:border-t-0">
+              <p className="text-sm font-semibold text-slate-950">Blueprint output</p>
+              <div className="mt-4 grid gap-3">
+                {[
+                  "Saved audit scope",
+                  "Generated eval assets",
+                  "Trace import next step",
+                ].map((item) => (
+                  <div key={item} className="flex items-start gap-2 rounded-[7px] border border-slate-200 bg-white p-3 text-sm leading-6 text-slate-700">
                     <CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-blue-600" />
                     <span>{item}</span>
                   </div>
                 ))}
               </div>
             </div>
-            <Button type="submit" disabled={busy === "create-project"}>
-              <Plus className="h-4 w-4" />
-              {busy === "create-project" ? "Creating..." : "Create project"}
-            </Button>
-          </form>
+          </div>
         </Card>
         <Card className="overflow-hidden">
           <div className="border-b border-slate-100 p-4">
@@ -2257,15 +2215,6 @@ function MetricCard({ label, value, detail, tone }: { label: string; value: stri
 
 function MetricMini({ label, value }: { label: string; value: string }) {
   return <div className="rounded-[8px] border border-slate-200 p-3"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 font-semibold text-slate-950">{value}</p></div>;
-}
-
-function Field({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return (
-    <label className="block">
-      <span className="text-sm font-semibold text-slate-700">{label}</span>
-      <input className="mt-2 h-11 w-full rounded-[7px] border border-slate-200 px-3 text-sm" value={value} onChange={(event) => onChange(event.target.value)} />
-    </label>
-  );
 }
 
 function SelectField({

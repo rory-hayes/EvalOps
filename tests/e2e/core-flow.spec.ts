@@ -1,13 +1,25 @@
 import { expect, test } from "@playwright/test";
 
+test.setTimeout(120_000);
+
 test("user completes Eval Debt Audit flow end to end", async ({ page }) => {
   await page.goto("/projects");
   await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: /create project/i }).click();
-  await expect(page.getByText("What EvalOps will generate")).toBeVisible();
-  await expect(page.locator("span").filter({ hasText: "Redact likely PII" }).first()).toBeVisible();
-  await expect(page.getByText("Primary goals")).toBeVisible();
-  await expect(page.getByText("Selected")).toBeVisible();
+  await page.getByRole("link", { name: /create audit plan/i }).click();
+  await expect(page).toHaveURL(/\/onboarding$/);
+  await page.getByRole("textbox", { name: "Project name" }).fill("Support Assistant Audit");
+  await page.getByRole("button", { name: /Support assistant/ }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("textbox", { name: "Evaluation objective" }).fill("Measure end-to-end answer quality, escalation accuracy, and billing/refund reliability.");
+  await page.getByRole("button", { name: /Safe escalation/ }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: /Billing accuracy/ }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("radio", { name: "Redact likely PII" }).check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByText("Trace import next")).toBeVisible();
+  await page.getByRole("button", { name: "Create audit plan" }).click();
+  await expect(page).toHaveURL(/\/trace-import$/);
 
   await page.goto("/trace-import");
   await expect(page.getByText("Schema mapping preview")).toBeVisible();

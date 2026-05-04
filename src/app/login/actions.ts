@@ -29,13 +29,16 @@ export async function login(formData: FormData) {
 }
 
 export async function signup(formData: FormData) {
+  const next = resolveAuthRedirectPath(String(formData.get("next") || "/onboarding"));
+  const errorPath = signupErrorPath(formData, next);
+
   if (!hasSupabasePublicConfig()) {
-    redirectWithError("Supabase authentication is not configured.");
+    redirectWithError("Supabase authentication is not configured.", errorPath);
   }
 
   const credentials = readCredentials(formData);
   if (!credentials.ok) {
-    redirectWithError(credentials.error);
+    redirectWithError(credentials.error, errorPath);
   }
 
   const supabase = await createSupabaseServerClient();
@@ -44,19 +47,19 @@ export async function signup(formData: FormData) {
   const { data, error } = await supabase.auth.signUp({
     ...credentials.data,
     options: {
-      emailRedirectTo: `${origin}/auth/confirm`,
+      emailRedirectTo: `${origin}/auth/confirm?next=${encodeURIComponent(next)}`,
     },
   });
 
   if (error) {
-    redirectWithError(error.message);
+    redirectWithError(error.message, errorPath);
   }
 
   revalidatePath("/", "layout");
   if (data.session) {
-    redirect(resolveAuthRedirectPath(String(formData.get("next") || "")));
+    redirect(next);
   }
-  redirectWithMessage("Check your email to confirm your account, then sign in.");
+  redirectWithMessage("Check your email to confirm your account, then sign in.", next);
 }
 
 function readCredentials(formData: FormData) {
@@ -74,10 +77,17 @@ function readCredentials(formData: FormData) {
   return { ok: true as const, data: { email, password } };
 }
 
-function redirectWithError(message: string): never {
-  redirect(`/login?error=${encodeURIComponent(message)}`);
+function redirectWithError(message: string, path = "/login"): never {
+  const separator = path.includes("?") ? "&" : "?";
+  redirect(`${path}${separator}error=${encodeURIComponent(message)}`);
 }
 
-function redirectWithMessage(message: string): never {
-  redirect(`/login?message=${encodeURIComponent(message)}`);
+function redirectWithMessage(message: string, next = "/projects"): never {
+  redirect(`/login?message=${encodeURIComponent(message)}&next=${encodeURIComponent(next)}`);
+}
+
+function signupErrorPath(formData: FormData, next: string) {
+  return formData.get("source") === "signup"
+    ? `/signup?next=${encodeURIComponent(next)}`
+    : "/login";
 }

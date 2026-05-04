@@ -65,10 +65,10 @@ export function LandingPage() {
               Sign in
             </Link>
             <Link
-              href="/onboarding"
+              href="/signup?next=/onboarding"
               className="inline-flex h-10 items-center justify-center gap-2 rounded-[7px] bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-700"
             >
-              Start audit setup
+              Get Started
               <ArrowRight className="h-4 w-4" />
             </Link>
           </div>
@@ -85,10 +85,10 @@ export function LandingPage() {
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <Link
-              href="/onboarding"
+              href="/signup?next=/onboarding"
               className="inline-flex h-12 items-center justify-center gap-2 rounded-[7px] bg-blue-600 px-5 text-sm font-semibold text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-700"
             >
-              Start audit setup
+              Get Started
               <ArrowRight className="h-4 w-4" />
             </Link>
             <Link
@@ -159,10 +159,10 @@ export function LandingPage() {
             After the first trace import, the user should see what was detected, what was generated, and what needs review. No vague “AI magic” states.
           </p>
           <Link
-            href="/onboarding"
+            href="/signup?next=/onboarding"
             className="mt-6 inline-flex h-11 items-center justify-center gap-2 rounded-[7px] bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
           >
-            Preview the setup wizard
+            Get Started
             <ArrowRight className="h-4 w-4" />
           </Link>
         </div>

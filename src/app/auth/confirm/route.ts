@@ -1,5 +1,6 @@
 import { type EmailOtpType } from "@supabase/supabase-js";
 import { type NextRequest, NextResponse } from "next/server";
+import { resolveAuthRedirectPath } from "@/app/login/redirects";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function GET(request: NextRequest) {
@@ -8,8 +9,7 @@ export async function GET(request: NextRequest) {
   const type = searchParams.get("type") as EmailOtpType | null;
   const code = searchParams.get("code");
   const redirectTo = request.nextUrl.clone();
-  redirectTo.pathname = "/projects";
-  redirectTo.search = "";
+  applyRedirectPath(redirectTo, resolveAuthRedirectPath(searchParams.get("next") || "/onboarding"));
 
   const supabase = await createSupabaseServerClient();
 
@@ -30,4 +30,11 @@ export async function GET(request: NextRequest) {
   redirectTo.pathname = "/login";
   redirectTo.searchParams.set("error", "The sign-in link is invalid or expired.");
   return NextResponse.redirect(redirectTo);
+}
+
+function applyRedirectPath(url: URL, path: string) {
+  const resolved = new URL(path, "https://evalops.local");
+  url.pathname = resolved.pathname;
+  url.search = resolved.search;
+  url.hash = resolved.hash;
 }

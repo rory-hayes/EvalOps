@@ -4,7 +4,6 @@ import { getSupabasePublicConfig } from "./config";
 
 const PUBLIC_PATHS = [
   "/",
-  "/onboarding",
   "/login",
   "/signup",
   "/auth/confirm",

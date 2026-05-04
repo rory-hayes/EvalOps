@@ -1,6 +1,7 @@
 const DEFAULT_AUTH_REDIRECT = "/projects";
 
 const WORKSPACE_PATHS = [
+  "/onboarding",
   "/dashboard",
   "/projects",
   "/trace-import",
