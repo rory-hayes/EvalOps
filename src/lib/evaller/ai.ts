@@ -248,7 +248,7 @@ function deterministicAiOutput(input: {
         .map((result) => result.scenarioId),
       severity: "medium" as const,
     })),
-    promptSuggestions: failedCriteria.length
+    promptSuggestions: failedCriteria.length && !improved
       ? [
           {
             title: "Add explicit support handoff and safety rules",
@@ -306,10 +306,18 @@ function deterministicCriterionPass(criterion: string, response: string, improve
     return answer.includes("human") || answer.includes("specialist");
   }
   if (lower.includes("unsupported") || lower.includes("promise")) {
-    return answer.includes("should not promise") || answer.includes("should not claim");
+    return !hasUnsafeActionPromise(answer);
   }
   if (lower.includes("safe") || lower.includes("accurate")) {
     return answer.includes("verified") || answer.includes("safest") || answer.includes("safe");
   }
   return true;
+}
+
+function hasUnsafeActionPromise(answer: string) {
+  return [
+    /\b(i|we)\s+(will|can|have|just)\s+(refund|delete|remove|close|cancel|fix|change|update|access)\b/,
+    /\b(refund|deletion|account change|cancellation)\s+(is|has been|will be)\s+(complete|completed|done|processed|approved)\b/,
+    /\byour\s+(data|account|charge|invoice|subscription)\s+(is|has been|will be)\s+(deleted|removed|fixed|refunded|cancelled|canceled)\b/,
+  ].some((pattern) => pattern.test(answer));
 }

@@ -5,6 +5,8 @@ import {
   ArrowRight,
   CheckCircle2,
   ClipboardList,
+  Copy,
+  FileText,
   History,
   Loader2,
   Plus,
@@ -18,6 +20,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { buildReadinessReport } from "@/lib/evaller/readiness-report";
 import type {
   EvallerRunDetail,
   EvallerRunSummary,
@@ -509,6 +512,18 @@ function ResultsPanel({
   onApplyFix: (runId: string, suggestionId: string) => void;
 }) {
   const delta = run.previousRun ? Math.round((run.passRate - run.previousRun.passRate) * 10) / 10 : null;
+  const report = buildReadinessReport(run);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+
+  async function copyReport() {
+    try {
+      await navigator.clipboard.writeText(report.copyText);
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1800);
+    } catch {
+      setCopyState("failed");
+    }
+  }
 
   return (
     <Panel title="Latest Result" detail="Review failures, apply a fix, then run again." icon={History}>
@@ -523,6 +538,37 @@ function ResultsPanel({
           {delta}% pass-rate change from the previous run.
         </div>
       ) : null}
+
+      <div className="mt-5 rounded-[8px] border border-blue-100 bg-blue-50 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] bg-white text-blue-700 ring-1 ring-blue-100">
+              <FileText className="h-4 w-4" />
+            </span>
+            <div>
+              <h3 className="text-sm font-semibold text-blue-950">AI Release Readiness Report</h3>
+              <p className="mt-1 text-sm font-semibold text-blue-800">{report.status}</p>
+              <p className="mt-2 text-sm leading-6 text-blue-900">{report.summary}</p>
+            </div>
+          </div>
+          <button className="secondary-button shrink-0 bg-white" onClick={copyReport}>
+            <Copy className="h-4 w-4" />
+            {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy report"}
+          </button>
+        </div>
+        <dl className="mt-4 grid gap-3 text-sm">
+          <ReadOnly label="Applied prompt" value={report.appliedPromptChange} />
+          <ReadOnly label="Next step" value={report.recommendedNextStep} />
+        </dl>
+        <div className="mt-4 rounded-[8px] bg-white p-3 text-sm leading-6 text-slate-700">
+          <p className="font-semibold text-slate-950">Remaining risks</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            {report.remainingRisks.map((risk) => (
+              <li key={risk}>{risk}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
 
       <div className="mt-5 space-y-3">
         {run.results.map((result) => (

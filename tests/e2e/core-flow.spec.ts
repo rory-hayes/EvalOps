@@ -52,14 +52,21 @@ test("user completes the Evaller improve and run-again loop", async ({ page }) =
   await page.getByRole("button", { name: "Run Again" }).click();
   await expect(page.getByText("AI test run completed.")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(/pass-rate change from the previous run/)).toBeVisible();
+  await expect(page.getByText("100%").first()).toBeVisible();
+  await expect(page.getByText("AI Release Readiness Report")).toBeVisible();
+  await expect(page.getByText("Ready for release review")).toBeVisible();
+  await expect(page.getByText("No open scenario failures in the latest run.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy report" })).toBeVisible();
 
   await page.getByRole("link", { name: "Runs" }).click();
   await expect(page).toHaveURL(/\/runs$/);
   await expect(page.getByRole("heading", { name: "Runs" })).toBeVisible();
   await expect(page.getByText("Run History")).toBeVisible();
-  await expect(page.getByText("Prompt v2")).toBeVisible();
+  await expect(page.getByText("Prompt v2").first()).toBeVisible();
+  await expect(page.getByText("AI Release Readiness Report")).toBeVisible();
 
   await page.reload();
   await expect(page.getByText("Run History")).toBeVisible();
-  await expect(page.getByText("Prompt v2")).toBeVisible();
+  await expect(page.getByText("Prompt v2").first()).toBeVisible();
+  await expect(page.getByText("Ready for release review")).toBeVisible();
 });
