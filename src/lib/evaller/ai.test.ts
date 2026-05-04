@@ -78,6 +78,57 @@ describe("Evaller AI runner", () => {
     });
   });
 
+  it("retries a transient OpenAI failure once before mapping structured output", async () => {
+    vi.stubEnv("EVALOPS_TEST_MODE", "0");
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    vi.stubEnv("OPENAI_EVALLER_MODEL", "gpt-test");
+
+    const transient = Object.assign(new Error("rate limit"), {
+      status: 429,
+      code: "rate_limit_exceeded",
+    });
+    const parse = vi.fn()
+      .mockRejectedValueOnce(transient)
+      .mockResolvedValueOnce({
+        output_parsed: {
+          results: [
+            {
+              scenarioId: "scenario_1",
+              assistantResponse: "I understand this is urgent. I can route you to a human specialist.",
+              score: 100,
+              passedCriteria: ["Offers a human handoff for billing, privacy, or urgent issues"],
+              failedCriteria: [],
+              rationale: "The response offers handoff.",
+            },
+          ],
+          failurePatterns: [],
+          promptSuggestions: [],
+        },
+      });
+
+    const result = await runEvallerAiTest({
+      aiTestName: "Support AI",
+      aiTestDescription: "Test support behavior.",
+      promptVersion: prompt("Offer human handoff."),
+      scenarios: [scenario("scenario_1", "I was charged twice.")],
+      successCriteria: [criterion("Offers a human handoff for billing, privacy, or urgent issues")],
+      qualityBar: 80,
+      runId: "run_1",
+      aiTestId: "ai_test_1",
+      organizationId: "org_1",
+      now: "2026-05-04T12:00:00.000Z",
+      makeId: (prefix) => `${prefix}_1`,
+      client: { responses: { parse } },
+      correlationId: "corr_1",
+    });
+
+    expect(parse).toHaveBeenCalledTimes(2);
+    expect(result.results[0]).toMatchObject({
+      status: "passed",
+      score: 100,
+    });
+  });
+
   it("deterministic baseline fails and recommends the support handoff fix", async () => {
     vi.stubEnv("EVALOPS_TEST_MODE", "1");
 

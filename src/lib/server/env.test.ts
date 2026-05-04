@@ -12,6 +12,7 @@ describe("server environment gates", () => {
     vi.stubEnv("SUPABASE_SECRET_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "sk-test");
     vi.stubEnv("OPENAI_AUDIT_MODEL", "");
+    vi.stubEnv("OPENAI_EVALLER_MODEL", "");
     vi.stubEnv("INNGEST_EVENT_KEY", "event-key");
     vi.stubEnv("INNGEST_SIGNING_KEY", "");
 
@@ -24,6 +25,7 @@ describe("server environment gates", () => {
       expect.arrayContaining([
         expect.objectContaining({ name: "supabase_service_key", status: "missing" }),
         expect.objectContaining({ name: "OPENAI_AUDIT_MODEL", status: "missing" }),
+        expect.objectContaining({ name: "OPENAI_EVALLER_MODEL", status: "missing" }),
         expect.objectContaining({ name: "INNGEST_SIGNING_KEY", status: "missing" }),
       ]),
     );
@@ -53,6 +55,7 @@ describe("server environment gates", () => {
     vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "service-role");
     vi.stubEnv("OPENAI_API_KEY", "sk-test");
     vi.stubEnv("OPENAI_AUDIT_MODEL", "gpt-test");
+    vi.stubEnv("OPENAI_EVALLER_MODEL", "gpt-test");
     vi.stubEnv("INNGEST_EVENT_KEY", "event-key");
     vi.stubEnv("INNGEST_SIGNING_KEY", "signing-key");
     vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_stripe");

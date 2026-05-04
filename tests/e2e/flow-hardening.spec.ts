@@ -35,23 +35,27 @@ test("validation guardrails keep incomplete AI tests from running", async ({ pag
   await expect(page.getByRole("button", { name: "Run AI Test" })).toBeEnabled();
 
   await page.getByRole("button", { name: "Add user scenario" }).click();
-  await expect(page.getByText("Complete or delete empty user scenarios.")).toBeVisible();
+  await expect(page.getByText("Complete or delete empty user scenarios.").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Run AI Test" })).toBeDisabled();
 
   await page.reload();
   await page.getByRole("button", { name: "Add success criterion" }).click();
-  await expect(page.getByText("Complete or delete empty success criteria.")).toBeVisible();
+  await expect(page.getByText("Complete or delete empty success criteria.").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Run AI Test" })).toBeDisabled();
 
   await page.reload();
   await page.getByLabel("Quality bar value").fill("101");
   await expect(page.getByText("Set the quality bar between 50 and 100.").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Run AI Test" })).toBeDisabled();
   await page.getByLabel("Quality bar value").blur();
   await expect(page.getByLabel("Quality bar value")).toHaveValue("100");
 
   await page.getByLabel("Quality bar value").fill("40");
   await expect(page.getByText("Set the quality bar between 50 and 100.").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Run AI Test" })).toBeDisabled();
   await page.getByLabel("Quality bar value").blur();
   await expect(page.getByLabel("Quality bar value")).toHaveValue("50");
@@ -60,7 +64,8 @@ test("validation guardrails keep incomplete AI tests from running", async ({ pag
   await page.getByLabel("Delete scenario 3").click();
   await page.getByLabel("Delete scenario 2").click();
   await page.getByLabel("Delete scenario 1").click();
-  await expect(page.getByText("Add at least one user scenario.")).toBeVisible();
+  await expect(page.getByText("Add at least one user scenario.").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Run AI Test" })).toBeDisabled();
 
   await page.reload();
@@ -68,7 +73,8 @@ test("validation guardrails keep incomplete AI tests from running", async ({ pag
   await page.getByLabel("Delete success criterion 3").click();
   await page.getByLabel("Delete success criterion 2").click();
   await page.getByLabel("Delete success criterion 1").click();
-  await expect(page.getByText("Add at least one success criterion.")).toBeVisible();
+  await expect(page.getByText("Add at least one success criterion.").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Run AI Test" })).toBeDisabled();
 });
 
@@ -84,7 +90,7 @@ test("autosave preserves edited workspace inputs without a manual save", async (
   await page.getByLabel("What are you testing?").fill("Whether unsaved edits survive refresh without a manual save.");
   await page.getByLabel("AI instructions").fill("You are a support AI. Offer a human handoff for risky account actions.");
   await autosaveResponse;
-  await expect(page.getByText("Saved")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Saved", { exact: true }).last()).toBeVisible({ timeout: 15_000 });
 
   await page.reload();
   await expect(page.getByLabel("AI test name")).toHaveValue("Autosaved Support Bot");

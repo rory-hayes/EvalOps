@@ -63,7 +63,7 @@ class SupabaseEvallerStore implements EvallerStore {
     return this.loadWorkspace(context);
   }
 
-  async runTest(actor: EvallerActor, input: EvallerWorkspaceInput) {
+  async runTest(actor: EvallerActor, input: EvallerWorkspaceInput, options: { correlationId?: string } = {}) {
     const context = await this.ensureWorkspace(actor);
     await this.persistWorkspaceInput(context, input);
     const workspace = await this.loadWorkspace(context);
@@ -105,6 +105,7 @@ class SupabaseEvallerStore implements EvallerStore {
         organizationId: context.organizationId,
         now,
         makeId,
+        correlationId: options.correlationId,
       });
       const completedRun = buildRunSummary({
         runId,
@@ -146,7 +147,7 @@ class SupabaseEvallerStore implements EvallerStore {
           .from("ai_test_runs")
           .update({
             status: "failed",
-            error_message: error instanceof Error ? error.message : "AI test run failed.",
+            error_message: runFailureMessage(error, options.correlationId),
             completed_at: new Date().toISOString(),
           })
           .eq("organization_id", context.organizationId)
@@ -618,13 +619,15 @@ class SupabaseEvallerStore implements EvallerStore {
     const failurePatterns = (patternRows || []).map(mapFailurePattern);
     const promptSuggestions = (suggestionRows || []).map(mapPromptSuggestion);
     const previousRun = previousRunRow ? mapRun(previousRunRow) : undefined;
-    const readinessReport = reportRow
-      ? mapReadinessReport(reportRow)
-      : buildReadinessReportRecord({
-          id: makeId("readiness_report"),
-          run: buildRunDetail(run, results, failurePatterns, promptSuggestions, previousRun),
-          now: run.completedAt || run.startedAt,
-        });
+    const readinessReport = run.status === "completed"
+      ? reportRow
+        ? mapReadinessReport(reportRow)
+        : buildReadinessReportRecord({
+            id: makeId("readiness_report"),
+            run: buildRunDetail(run, results, failurePatterns, promptSuggestions, previousRun),
+            now: run.completedAt || run.startedAt,
+          })
+      : undefined;
     return buildRunDetail(
       run,
       results,
@@ -637,6 +640,13 @@ class SupabaseEvallerStore implements EvallerStore {
   }
 
   private async ensureReadinessReport(context: { organizationId: string }, run: EvallerRunSummary) {
+    if (run.status !== "completed") {
+      throw new ApiError(
+        409,
+        "A readiness report is only available after a completed AI test run.",
+        "readiness_report_unavailable",
+      );
+    }
     const { data: reportRow } = await checked(
       this.db
         .from("ai_test_readiness_reports")
@@ -991,6 +1001,11 @@ async function checked<T>(promise: PromiseLike<{ data: T; error: any }>) {
     throw new Error(result.error.message || "Supabase request failed.");
   }
   return result;
+}
+
+function runFailureMessage(error: unknown, correlationId?: string) {
+  const message = error instanceof Error ? error.message : "AI test run failed.";
+  return correlationId ? `${message} Reference: ${correlationId}.` : message;
 }
 
 function makeId(prefix: string) {

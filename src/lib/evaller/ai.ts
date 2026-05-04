@@ -3,6 +3,7 @@ import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import { ApiError } from "@/lib/server/auth";
 import { isTestMode } from "@/lib/server/env";
+import { logServerEvent } from "@/lib/server/logger";
 import {
   buildFallbackFailurePatterns,
   buildFallbackPromptSuggestion,
@@ -72,6 +73,7 @@ export async function runEvallerAiTest(input: {
   now: string;
   makeId: (prefix: string) => string;
   client?: ResponsesClient;
+  correlationId?: string;
 }) {
   const output = await generateEvallerAiOutput(input);
   const mapped = mapAiOutputToStoredArtifacts({
@@ -123,7 +125,9 @@ async function generateEvallerAiOutput(input: {
   scenarios: EvallerScenario[];
   successCriteria: EvallerSuccessCriterion[];
   qualityBar: number;
+  runId: string;
   client?: ResponsesClient;
+  correlationId?: string;
 }): Promise<EvallerAiRunOutput> {
   if (isTestMode() && !input.client) {
     return deterministicAiOutput(input);
@@ -138,68 +142,112 @@ async function generateEvallerAiOutput(input: {
     );
   }
 
-  const model = process.env.OPENAI_EVALLER_MODEL?.trim() || process.env.OPENAI_AUDIT_MODEL?.trim() || "gpt-5.5";
-  const client = input.client || (new OpenAI({ apiKey }) as unknown as ResponsesClient);
-
-  try {
-    const response = await client.responses.parse({
-      model,
-      input: [
-        {
-          role: "system",
-          content:
-            "You run product-friendly AI quality tests. First simulate the tested support AI using the provided instructions and user scenarios. Then grade each simulated response against the success criteria. Return structured JSON only.",
-        },
-        {
-          role: "user",
-          content: JSON.stringify(
-            {
-              aiFeature: {
-                name: input.aiTestName,
-                description: input.aiTestDescription,
-                qualityBar: input.qualityBar,
-              },
-              testedInstructions: input.promptVersion.instructions,
-              userScenarios: input.scenarios.map((scenario) => ({
-                id: scenario.id,
-                title: scenario.title,
-                message: scenario.message,
-                expectedBehavior: scenario.expectedBehavior,
-              })),
-              successCriteria: input.successCriteria.map((criterion) => criterion.text),
-              instructions: [
-                "Generate one assistant response per user scenario using only the tested instructions.",
-                "Grade each assistant response against every success criterion.",
-                "A scenario should score below the quality bar if important criteria are missing.",
-                "Group repeated failures into plain-language failure patterns.",
-                "Suggest concrete prompt fixes. revisedInstructions must be the full revised prompt, not a diff.",
-                "Do not invent customer secrets or claim external actions were completed.",
-              ],
-            },
-            null,
-            2,
-          ),
-        },
-      ],
-      text: {
-        format: zodTextFormat(evallerAiRunOutputSchema, "evaller_ai_test_run"),
-      },
-      store: false,
-    });
-
-    if (!response.output_parsed) {
-      throw new Error("OpenAI did not return structured AI test results.");
-    }
-
-    return response.output_parsed;
-  } catch (error) {
-    if (error instanceof ApiError) throw error;
+  const model = process.env.OPENAI_EVALLER_MODEL?.trim() || process.env.OPENAI_AUDIT_MODEL?.trim();
+  if (!model) {
     throw new ApiError(
-      502,
-      "The AI test run failed while calling OpenAI. Please try again.",
-      "openai_run_failed",
+      503,
+      "OpenAI model configuration is missing for AI test runs. Set OPENAI_EVALLER_MODEL before running tests.",
+      "openai_model_not_configured",
     );
   }
+  const client = input.client || (new OpenAI({ apiKey }) as unknown as ResponsesClient);
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const response = await client.responses.parse({
+        model,
+        input: [
+          {
+            role: "system",
+            content:
+              "You run product-friendly AI quality tests. First simulate the tested support AI using the provided instructions and user scenarios. Then grade each simulated response against the success criteria. Return structured JSON only.",
+          },
+          {
+            role: "user",
+            content: JSON.stringify(
+              {
+                aiFeature: {
+                  name: input.aiTestName,
+                  description: input.aiTestDescription,
+                  qualityBar: input.qualityBar,
+                },
+                testedInstructions: input.promptVersion.instructions,
+                userScenarios: input.scenarios.map((scenario) => ({
+                  id: scenario.id,
+                  title: scenario.title,
+                  message: scenario.message,
+                  expectedBehavior: scenario.expectedBehavior,
+                })),
+                successCriteria: input.successCriteria.map((criterion) => criterion.text),
+                instructions: [
+                  "Generate one assistant response per user scenario using only the tested instructions.",
+                  "Grade each assistant response against every success criterion.",
+                  "A scenario should score below the quality bar if important criteria are missing.",
+                  "Group repeated failures into plain-language failure patterns.",
+                  "Suggest concrete prompt fixes. revisedInstructions must be the full revised prompt, not a diff.",
+                  "Do not invent customer secrets or claim external actions were completed.",
+                ],
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+        text: {
+          format: zodTextFormat(evallerAiRunOutputSchema, "evaller_ai_test_run"),
+        },
+        store: false,
+      });
+
+      if (!response.output_parsed) {
+        throw new Error("OpenAI did not return structured AI test results.");
+      }
+
+      return response.output_parsed;
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      const transient = isTransientOpenAiError(error);
+      logServerEvent(transient && attempt === 1 ? "warn" : "error", "evaller.openai_run_failed", {
+        correlationId: input.correlationId,
+        runId: input.runId,
+        model,
+        attempt,
+        maxAttempts: 2,
+        transient,
+        error: sanitizeOpenAiError(error),
+      });
+      if (transient && attempt === 1) {
+        continue;
+      }
+      throw new ApiError(
+        502,
+        "The AI test run failed while calling OpenAI. Please try again.",
+        "openai_run_failed",
+      );
+    }
+  }
+
+  throw new ApiError(502, "The AI test run failed while calling OpenAI. Please try again.", "openai_run_failed");
+}
+
+function isTransientOpenAiError(error: unknown) {
+  const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: unknown }).status) : 0;
+  const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "";
+  return status === 408 || status === 409 || status === 429 || status >= 500 || /rate|timeout|temporar|overload/i.test(code);
+}
+
+function sanitizeOpenAiError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return { name: "UnknownError", message: "Unknown OpenAI error." };
+  }
+  const extra = error as Error & { status?: unknown; code?: unknown; type?: unknown };
+  return {
+    name: error.name,
+    message: error.message,
+    status: typeof extra.status === "number" ? extra.status : undefined,
+    code: typeof extra.code === "string" ? extra.code : undefined,
+    type: typeof extra.type === "string" ? extra.type : undefined,
+  };
 }
 
 function deterministicAiOutput(input: {

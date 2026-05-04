@@ -233,7 +233,7 @@ export type EvallerAiRunOutput = {
 export type EvallerStore = {
   getWorkspace(actor: EvallerActor): Promise<EvallerWorkspace>;
   saveWorkspace(actor: EvallerActor, input: EvallerWorkspaceInput): Promise<EvallerWorkspace>;
-  runTest(actor: EvallerActor, input: EvallerWorkspaceInput): Promise<EvallerRunDetail>;
+  runTest(actor: EvallerActor, input: EvallerWorkspaceInput, options?: { correlationId?: string }): Promise<EvallerRunDetail>;
   listRuns(actor: EvallerActor): Promise<EvallerRunSummary[]>;
   getRun(actor: EvallerActor, runId: string): Promise<EvallerRunDetail>;
   applyFix(actor: EvallerActor, runId: string, suggestionId: string): Promise<EvallerWorkspace>;

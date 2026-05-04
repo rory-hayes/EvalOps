@@ -16,9 +16,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return handleApi(async () => {
+  return handleApi(async (correlationId) => {
     const actor = await getActorFromRequest(request);
     const input = evallerWorkspaceInputSchema.parse(await readJsonBody(request));
-    return getEvallerStore().runTest(actor, input);
+    return getEvallerStore().runTest(actor, input, { correlationId });
   });
 }

@@ -70,7 +70,7 @@ class LocalEvallerStore implements EvallerStore {
     return this.toWorkspace(actor, records, await resolveWorkspaceContext(actor));
   }
 
-  async runTest(actor: EvallerActor, input: EvallerWorkspaceInput) {
+  async runTest(actor: EvallerActor, input: EvallerWorkspaceInput, options: { correlationId?: string } = {}) {
     const state = await this.load();
     const records = this.ensureRecords(state, actor);
     const context = await resolveWorkspaceContext(actor);
@@ -114,6 +114,7 @@ class LocalEvallerStore implements EvallerStore {
         organizationId: records.aiTest.organizationId,
         now,
         makeId,
+        correlationId: options.correlationId,
       });
       const completedRun = buildRunSummary({
         runId,
@@ -140,7 +141,7 @@ class LocalEvallerStore implements EvallerStore {
       return buildRunDetail(completedRun, artifacts.results, artifacts.failurePatterns, artifacts.promptSuggestions, previousRun, report, []);
     } catch (error) {
       runShell.status = "failed";
-      runShell.errorMessage = error instanceof Error ? error.message : "AI test run failed.";
+      runShell.errorMessage = runFailureMessage(error, options.correlationId);
       runShell.completedAt = new Date().toISOString();
       await this.save(state);
       throw error;
@@ -310,12 +311,21 @@ class LocalEvallerStore implements EvallerStore {
       records.failurePatterns.filter((pattern) => pattern.runId === run.id),
       records.promptSuggestions.filter((suggestion) => suggestion.runId === run.id),
       run.previousRunId ? records.runs.find((item) => item.id === run.previousRunId) : undefined,
-      records.readinessReports.find((report) => report.runId === run.id) || this.buildDerivedReadinessReport(records, run),
+      run.status === "completed"
+        ? records.readinessReports.find((report) => report.runId === run.id) || this.buildDerivedReadinessReport(records, run)
+        : undefined,
       records.reviewComments.filter((comment) => comment.runId === run.id),
     );
   }
 
   private ensureReadinessReport(records: LocalWorkspaceRecords, run: EvallerRunSummary) {
+    if (run.status !== "completed") {
+      throw new ApiError(
+        409,
+        "A readiness report is only available after a completed AI test run.",
+        "readiness_report_unavailable",
+      );
+    }
     const existing = records.readinessReports.find((report) => report.runId === run.id);
     if (existing) return existing;
     const report = this.buildDerivedReadinessReport(records, run);
@@ -324,6 +334,13 @@ class LocalEvallerStore implements EvallerStore {
   }
 
   private buildDerivedReadinessReport(records: LocalWorkspaceRecords, run: EvallerRunSummary) {
+    if (run.status !== "completed") {
+      throw new ApiError(
+        409,
+        "A readiness report is only available after a completed AI test run.",
+        "readiness_report_unavailable",
+      );
+    }
     return buildReadinessReportRecord({
       id: makeId("readiness_report"),
       run: buildRunDetail(
@@ -410,6 +427,11 @@ class LocalEvallerStore implements EvallerStore {
     await mkdir(dirname(this.filePath), { recursive: true });
     await writeFile(this.filePath, JSON.stringify(state, null, 2));
   }
+}
+
+function runFailureMessage(error: unknown, correlationId?: string) {
+  const message = error instanceof Error ? error.message : "AI test run failed.";
+  return correlationId ? `${message} Reference: ${correlationId}.` : message;
 }
 
 export function applyWorkspaceInput(

@@ -25,6 +25,7 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
 SUPABASE_SECRET_KEY=...
 OPENAI_API_KEY=...
 OPENAI_AUDIT_MODEL=gpt-5.5
+OPENAI_EVALLER_MODEL=gpt-5.5
 INNGEST_EVENT_KEY=...
 INNGEST_SIGNING_KEY=...
 STRIPE_SECRET_KEY=...
@@ -102,7 +103,7 @@ Run the live smoke against a preview or production deployment with real smoke us
 EVALOPS_BASE_URL=https://<deployment-url> npm run smoke:production
 ```
 
-The smoke signs in through Supabase Auth, creates a project, uploads a trace file, waits for Inngest processing, verifies OpenAI structured generation metadata, exports a PDF, checks duplicate upload protection, and confirms Supabase RLS/storage isolation between two smoke users.
+The smoke signs in through Supabase Auth, creates a project, uploads a trace file, waits for Inngest processing, verifies OpenAI structured generation metadata, runs the live Evaller support-AI loop, exports a PDF, checks duplicate upload protection, and confirms Supabase RLS/storage isolation between two smoke users.
 
 ## Vercel Deployment
 
@@ -115,6 +116,7 @@ vercel env add NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY production
 vercel env add SUPABASE_SECRET_KEY production
 vercel env add OPENAI_API_KEY production
 vercel env add OPENAI_AUDIT_MODEL production
+vercel env add OPENAI_EVALLER_MODEL production
 vercel env add INNGEST_EVENT_KEY production
 vercel env add INNGEST_SIGNING_KEY production
 vercel env add STRIPE_SECRET_KEY production
@@ -137,6 +139,7 @@ EVALOPS_SMOKE_SECONDARY_EMAIL
 EVALOPS_SMOKE_SECONDARY_PASSWORD
 NEXT_PUBLIC_SUPABASE_URL
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+OPENAI_EVALLER_MODEL
 ```
 
 ## Source Documents

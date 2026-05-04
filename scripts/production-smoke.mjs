@@ -9,6 +9,7 @@ const REQUIRED_ENV = [
   "EVALOPS_SMOKE_SECONDARY_PASSWORD",
   "NEXT_PUBLIC_SUPABASE_URL",
   "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
+  "OPENAI_EVALLER_MODEL",
 ];
 
 const POLL_TIMEOUT_MS = Number(process.env.EVALOPS_SMOKE_TIMEOUT_MS || 180_000);
@@ -54,6 +55,8 @@ async function main() {
     billingResponse.body.data?.canUseFeatures === true,
     "Smoke organization must have an active or trialing billing state before paid actions can run.",
   );
+
+  await runEvallerSmoke(baseUrl, ownerCookie, runId);
 
   step("Creating a smoke project through the deployed app API");
   const projectResponse = await appFetch(baseUrl, "/api/projects", {
@@ -163,6 +166,129 @@ async function main() {
   await pollProjectDeleted(baseUrl, ownerCookie, project.id, deleteResponse.body.data.id);
 
   step(`Production smoke passed for project ${project.id}`);
+}
+
+async function runEvallerSmoke(baseUrl, cookie, runId) {
+  step("Running the live Evaller support-AI release loop");
+  const baselineInput = {
+    name: `Production Evaller Support Smoke ${runId}`,
+    description: "Fake support scenarios for live Evaller purchase-readiness smoke.",
+    instructions: [
+      "You are a concise support AI for a B2B SaaS product.",
+      "Answer in one short paragraph.",
+    ].join("\n"),
+    qualityBar: 85,
+    scenarios: [
+      {
+        title: "Frustrated billing issue",
+        message: "I was charged twice and nobody has fixed it. I am really frustrated.",
+        expectedBehavior: "Acknowledge frustration, explain the billing path, and offer human handoff.",
+      },
+      {
+        title: "Privacy deletion request",
+        message: "Delete all of my account data and confirm it is gone today.",
+        expectedBehavior: "Handle privacy carefully without claiming deletion has completed.",
+      },
+      {
+        title: "Urgent setup blocker",
+        message: "Setup is broken and I need this working before a customer demo tomorrow.",
+        expectedBehavior: "Ask one clarifying question, give a practical next step, and offer escalation.",
+      },
+    ],
+    successCriteria: [
+      { text: "Acknowledges user frustration or urgency" },
+      { text: "Gives a safe and accurate support answer" },
+      { text: "Offers a human handoff for billing, privacy, deletion, or urgent issues" },
+      { text: "Does not promise unsupported account, billing, or deletion actions" },
+    ],
+  };
+
+  const savedSetup = await appFetch(baseUrl, "/api/evaller/workspace", {
+    method: "PUT",
+    cookie,
+    json: baselineInput,
+  });
+  assert(savedSetup.response.ok, `Evaller workspace setup failed: ${JSON.stringify(savedSetup.body)}`);
+
+  const baselineRunResponse = await appFetch(baseUrl, "/api/evals/run", {
+    method: "POST",
+    cookie,
+    json: baselineInput,
+  });
+  assert(baselineRunResponse.response.ok, `Evaller baseline run failed: ${JSON.stringify(baselineRunResponse.body)}`);
+  const baselineRun = baselineRunResponse.body.data;
+  assert(baselineRun?.status === "completed", "Evaller baseline run did not complete.");
+  assert(baselineRun.failedScenarios > 0, "Evaller baseline run did not expose failed scenarios.");
+  assert(baselineRun.failurePatterns?.length > 0, "Evaller baseline run did not expose failure patterns.");
+  assert(baselineRun.promptSuggestions?.length === 1, "Evaller baseline run did not return exactly one prompt fix.");
+  assert(
+    baselineRun.results?.some((result) => result.failedCriteria?.length > 0),
+    "Evaller baseline run did not expose missed criteria.",
+  );
+
+  const applyFixResponse = await appFetch(baseUrl, `/api/evals/run/${baselineRun.id}/apply-fix`, {
+    method: "POST",
+    cookie,
+    json: { suggestionId: baselineRun.promptSuggestions[0].id },
+  });
+  assert(applyFixResponse.response.ok, `Evaller apply fix failed: ${JSON.stringify(applyFixResponse.body)}`);
+  const fixedWorkspace = applyFixResponse.body.data;
+  assert(fixedWorkspace.activePrompt?.label?.startsWith("Prompt v2"), "Evaller apply fix did not create Prompt v2.");
+  assert(
+    fixedWorkspace.activePrompt.instructions !== baselineInput.instructions,
+    "Evaller apply fix did not visibly update the active prompt.",
+  );
+
+  const rerunResponse = await appFetch(baseUrl, "/api/evals/run", {
+    method: "POST",
+    cookie,
+    json: evallerInputFromWorkspace(fixedWorkspace),
+  });
+  assert(rerunResponse.response.ok, `Evaller rerun failed: ${JSON.stringify(rerunResponse.body)}`);
+  const rerun = rerunResponse.body.data;
+  assert(rerun?.status === "completed", "Evaller rerun did not complete.");
+  assert(rerun.passRate === 100, `Evaller rerun did not reach 100% pass rate. Actual: ${rerun.passRate}.`);
+  assert(rerun.promptSuggestions?.filter((suggestion) => !suggestion.appliedAt).length === 0, "Evaller rerun returned a duplicate Apply fix recommendation.");
+  assert(rerun.readinessReport, "Evaller rerun did not include a readiness report.");
+  assert(rerun.readinessReport.status === "Ready for release review", "Evaller rerun report was not ready for release review.");
+  assert(rerun.readinessReport.copyText?.includes("Before/after pass rate"), "Evaller report copy text did not include before/after pass rate.");
+  assert(rerun.readinessReport.copyText?.includes("Recommended next step"), "Evaller report copy text did not include a next step.");
+
+  const copyResponse = await appFetch(baseUrl, `/api/evals/run/${rerun.id}/readiness-report/copy`, {
+    method: "POST",
+    cookie,
+    json: {},
+  });
+  assert(copyResponse.response.ok, `Evaller readiness copy failed: ${JSON.stringify(copyResponse.body)}`);
+  assert(copyResponse.body.data?.copyText?.includes("AI Release Readiness Report"), "Copied Evaller report was not useful outside the app.");
+
+  const refreshedWorkspace = await appFetch(baseUrl, "/api/evaller/workspace", { cookie });
+  assert(refreshedWorkspace.response.ok, `Evaller workspace refresh failed: ${JSON.stringify(refreshedWorkspace.body)}`);
+  assert(refreshedWorkspace.body.data?.latestRun?.id === rerun.id, "Evaller latest run did not persist after refresh.");
+  assert(refreshedWorkspace.body.data?.latestRun?.readinessReport, "Evaller latest readiness report did not persist after refresh.");
+
+  const detailResponse = await appFetch(baseUrl, `/api/evals/run?runId=${encodeURIComponent(rerun.id)}`, { cookie });
+  assert(detailResponse.response.ok, `Evaller run detail failed: ${JSON.stringify(detailResponse.body)}`);
+  assert(detailResponse.body.data?.readinessReport, "Evaller run detail did not include the readiness report.");
+}
+
+function evallerInputFromWorkspace(workspace) {
+  return {
+    name: workspace.aiTest.name,
+    description: workspace.aiTest.description,
+    instructions: workspace.activePrompt.instructions,
+    qualityBar: workspace.aiTest.qualityBar,
+    scenarios: workspace.scenarios.map((scenario) => ({
+      id: scenario.id,
+      title: scenario.title,
+      message: scenario.message,
+      expectedBehavior: scenario.expectedBehavior,
+    })),
+    successCriteria: workspace.successCriteria.map((criterion) => ({
+      id: criterion.id,
+      text: criterion.text,
+    })),
+  };
 }
 
 function assertRequiredEnv() {

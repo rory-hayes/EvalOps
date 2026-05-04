@@ -32,6 +32,7 @@ export function buildReadinessReport(run: EvallerRunDetail): EvallerReadinessRep
       "AI Release Readiness Report",
       `Status: ${status}`,
       `Summary: ${summary}`,
+      `Before/after pass rate: ${formatBeforeAfter(run)}`,
       `Prompt: ${appliedPromptChange}`,
       "Remaining risks:",
       ...remainingRisks.map((risk) => `- ${risk}`),
@@ -79,6 +80,14 @@ function buildSummary(run: EvallerRunDetail, delta: number | null) {
     return `${base}, ${delta >= 0 ? "up" : "down"} ${formatPercent(Math.abs(delta))} from the previous run.`;
   }
   return `${base} with ${run.failedScenarios} still failing.`;
+}
+
+function formatBeforeAfter(run: EvallerRunDetail) {
+  if (run.previousRun) {
+    const delta = round(run.passRate - run.previousRun.passRate);
+    return `${formatPercent(run.previousRun.passRate)} before, ${formatPercent(run.passRate)} after (${delta >= 0 ? "+" : ""}${formatPercent(delta)}).`;
+  }
+  return `${formatPercent(run.passRate)} baseline.`;
 }
 
 function collectRemainingRisks(run: EvallerRunDetail) {
