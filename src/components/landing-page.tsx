@@ -3,43 +3,56 @@ import {
   BarChart3,
   CheckCircle2,
   ClipboardCheck,
+  History,
   LockKeyhole,
-  Route,
   ShieldCheck,
   Sparkles,
-  UploadCloud,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 
-const auditOutputs = [
-  "Intent map and coverage gaps",
-  "Starter golden, regression, edge, and safety cases",
-  "Grader pack with calibration warnings",
-  "Prompt, routing, and caching recommendations",
-  "Executive-ready Eval Debt Audit report",
+const proofPoints = [
+  "Prompt, scenarios, criteria, and run history in one workspace",
+  "Before and after evidence for every prompt fix",
+  "Release review notes tied to the exact prompt version",
 ];
 
 const workflowSteps = [
   {
-    title: "Set the audit frame",
-    detail: "Pick the workflow, goals, risk areas, and privacy posture before importing anything.",
+    title: "Frame the release check",
+    detail: "Describe the AI feature, add realistic support scenarios, and set the quality bar.",
     icon: ClipboardCheck,
   },
   {
-    title: "Import traces safely",
-    detail: "Upload real examples, preview what was found, and redact likely PII before review.",
-    icon: UploadCloud,
-  },
-  {
-    title: "Generate the eval system",
-    detail: "Turn traces into cases, graders, failure clusters, and a first report draft.",
+    title: "Run the AI test",
+    detail: "Score each response against the success criteria and surface missed behavior clearly.",
     icon: Sparkles,
   },
   {
-    title: "Act on recommendations",
-    detail: "Review optimizer, routing, caching, and report guidance with a clear evidence trail.",
-    icon: Route,
+    title: "Approve with evidence",
+    detail: "Apply fixes, compare the next run, and copy a readiness report for your team.",
+    icon: ShieldCheck,
+  },
+];
+
+const screenshots = [
+  {
+    src: "/landing/evaller-runs.png",
+    alt: "Evaller Runs History showing a selected run, pass-rate trend, and release readiness report",
+    title: "Runs History",
+    detail: "Track pass-rate movement and inspect the exact run behind a release decision.",
+  },
+  {
+    src: "/landing/evaller-settings.png",
+    alt: "Evaller Settings showing workspace control, team review, prompt versions, and privacy posture",
+    title: "Settings and Prompt Versions",
+    detail: "Keep prompt history, team review, and AI privacy posture visible.",
+  },
+  {
+    src: "/landing/evaller-templates.png",
+    alt: "Evaller Templates showing a support AI release check starter workspace",
+    title: "Starter Templates",
+    detail: "Start with a focused support AI readiness template, then make it your own.",
   },
 ];
 
@@ -50,158 +63,181 @@ export function LandingPage() {
         <div className="mx-auto flex min-h-20 max-w-[1180px] items-center justify-between gap-4 px-4 sm:px-6">
           <Link href="/" className="flex items-center gap-3">
             <BrandMark />
-            <span className="text-base font-semibold">EvalOps Copilot</span>
+            <span>
+              <span className="block text-base font-semibold">Evaller</span>
+              <span className="mt-0.5 block text-xs font-medium text-slate-500">Release readiness</span>
+            </span>
           </Link>
           <nav className="hidden items-center gap-7 text-sm font-medium text-slate-600 md:flex">
             <a href="#workflow" className="hover:text-slate-950">Workflow</a>
-            <a href="#outputs" className="hover:text-slate-950">Outputs</a>
-            <a href="#screens" className="hover:text-slate-950">Product</a>
+            <a href="#screens" className="hover:text-slate-950">Screens</a>
+            <a href="#trust" className="hover:text-slate-950">Trust</a>
           </nav>
           <div className="flex items-center gap-2">
             <Link
               href="/login"
-              className="hidden h-10 items-center rounded-[7px] px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 sm:inline-flex"
+              className="hidden h-10 items-center rounded-[8px] px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 sm:inline-flex"
             >
               Sign in
             </Link>
             <Link
-              href="/signup?next=/onboarding"
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-[7px] bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-700"
+              href="/signup?next=/workspace"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-700"
             >
-              Get Started
+              Create account
               <ArrowRight className="h-4 w-4" />
             </Link>
           </div>
         </div>
       </header>
 
-      <section className="mx-auto grid min-h-[calc(100vh-80px)] max-w-[1180px] items-center gap-10 px-4 py-14 sm:px-6 lg:grid-cols-[0.9fr_1.1fr] lg:py-18">
-        <div>
-          <h1 className="max-w-3xl text-5xl font-semibold leading-[1.02] tracking-normal text-slate-950 sm:text-6xl">
-            Create, maintain, and improve high-quality AI evals.
-          </h1>
-          <p className="mt-6 max-w-2xl text-lg leading-8 text-slate-600">
-            EvalOps Copilot turns prompts, traces, requirements, and known failures into a living Eval Debt Audit with cases, graders, recommendations, and a customer-ready report.
-          </p>
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <Link
-              href="/signup?next=/onboarding"
-              className="inline-flex h-12 items-center justify-center gap-2 rounded-[7px] bg-blue-600 px-5 text-sm font-semibold text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-700"
-            >
-              Get Started
-              <ArrowRight className="h-4 w-4" />
-            </Link>
-            <Link
-              href="#screens"
-              className="inline-flex h-12 items-center justify-center gap-2 rounded-[7px] border border-slate-200 bg-white px-5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              View sample report
-            </Link>
-          </div>
-          <div className="mt-8 grid max-w-xl gap-3 text-sm text-slate-600 sm:grid-cols-3">
-            <ProofPoint label="Private MVP" value="Service-assisted audit" />
-            <ProofPoint label="Primary input" value="Traces and prompts" />
-            <ProofPoint label="Output" value="Eval pack and report" />
-          </div>
-        </div>
-
-        <div className="relative">
-          <div className="absolute -left-4 top-8 hidden h-48 w-48 rounded-full bg-blue-100 blur-3xl lg:block" />
-          <div className="relative rounded-[10px] border border-slate-200 bg-slate-50 p-3 shadow-[0_24px_70px_rgba(15,23,42,0.16)]">
-            <Image
-              src="/landing/dashboard.png"
-              alt="EvalOps Copilot dashboard showing eval health, coverage, and audit activity"
-              width={1440}
-              height={950}
-              priority
-              className="aspect-[16/10] w-full rounded-[8px] border border-slate-200 bg-white object-cover object-left-top"
-            />
-          </div>
-          <div className="absolute -bottom-6 right-6 hidden w-[58%] rounded-[10px] border border-slate-200 bg-white p-2 shadow-[0_18px_55px_rgba(15,23,42,0.18)] md:block">
-            <Image
-              src="/landing/report.png"
-              alt="EvalOps Copilot audit report preview"
-              width={1440}
-              height={950}
-              loading="eager"
-              className="aspect-[16/10] w-full rounded-[7px] border border-slate-200 object-cover object-left-top"
-            />
+      <section className="relative isolate min-h-[calc(100svh-160px)] overflow-hidden bg-slate-950">
+        <Image
+          src="/landing/evaller-workspace.png"
+          alt="Evaller Workspace Cockpit with release readiness score, next recommended action, and latest result"
+          fill
+          priority
+          sizes="100vw"
+          className="object-cover object-left-top opacity-70"
+        />
+        <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(2,6,23,0.96)_0%,rgba(15,23,42,0.82)_35%,rgba(15,23,42,0.22)_72%,rgba(15,23,42,0.04)_100%)]" />
+        <div className="relative mx-auto flex min-h-[calc(100svh-160px)] max-w-[1180px] items-center px-4 py-16 sm:px-6">
+          <div className="max-w-2xl text-white">
+            <p className="text-sm font-semibold uppercase tracking-normal text-sky-200">Support AI release checks</p>
+            <h1 className="mt-5 text-6xl font-semibold leading-[0.98] tracking-normal sm:text-7xl">
+              Evaller
+            </h1>
+            <p className="mt-6 max-w-xl text-xl leading-8 text-slate-100">
+              Test support AI prompts before release, apply fixes with evidence, and share a readiness report your team can trust.
+            </p>
+            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+              <Link
+                href="/signup?next=/workspace"
+                className="inline-flex h-12 items-center justify-center gap-2 rounded-[8px] bg-blue-500 px-5 text-sm font-semibold text-white shadow-sm shadow-blue-950/30 transition hover:bg-blue-400"
+              >
+                Create account
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+              <a
+                href="#screens"
+                className="inline-flex h-12 items-center justify-center gap-2 rounded-[8px] border border-white/25 bg-white/10 px-5 text-sm font-semibold text-white transition hover:bg-white/15"
+              >
+                See what you get
+              </a>
+            </div>
+            <div className="mt-8 grid gap-3 text-sm leading-6 text-slate-200">
+              {proofPoints.map((point) => (
+                <div key={point} className="flex items-start gap-3">
+                  <CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-sky-300" />
+                  <span>{point}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </section>
 
-      <section id="workflow" className="border-y border-slate-200 bg-slate-50">
+      <section id="workflow" className="border-b border-slate-200 bg-white">
         <div className="mx-auto max-w-[1180px] px-4 py-16 sm:px-6">
-          <div className="max-w-2xl">
-            <h2 className="text-3xl font-semibold tracking-normal">A guided path from messy traces to a usable eval system.</h2>
-            <p className="mt-4 text-sm leading-6 text-slate-600">
-              The setup flow makes the audit explicit before generation starts, so users know what will be created and why each step matters.
-            </p>
+          <div className="grid gap-8 lg:grid-cols-[0.75fr_1.25fr]">
+            <div>
+              <p className="text-sm font-semibold text-blue-700">How it works</p>
+              <h2 className="mt-3 text-3xl font-semibold tracking-normal">
+                One focused loop from prompt to release decision.
+              </h2>
+              <p className="mt-4 text-sm leading-6 text-slate-600">
+                Evaller keeps the first workflow tight: support AI prompt, realistic user scenarios, quality criteria, run results, prompt fixes, and review approval.
+              </p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              {workflowSteps.map((step) => (
+                <div key={step.title} className="rounded-[8px] border border-slate-200 bg-slate-50 p-5">
+                  <span className="inline-flex h-10 w-10 items-center justify-center rounded-[8px] bg-blue-50 text-blue-700 ring-1 ring-blue-100">
+                    <step.icon className="h-5 w-5" />
+                  </span>
+                  <h3 className="mt-5 text-base font-semibold text-slate-950">{step.title}</h3>
+                  <p className="mt-3 text-sm leading-6 text-slate-600">{step.detail}</p>
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {workflowSteps.map((step) => (
-              <div key={step.title} className="rounded-[8px] border border-slate-200 bg-white p-5 shadow-sm">
-                <span className="inline-flex h-10 w-10 items-center justify-center rounded-[8px] bg-blue-50 text-blue-700 ring-1 ring-blue-100">
-                  <step.icon className="h-5 w-5" />
-                </span>
-                <h3 className="mt-5 text-base font-semibold text-slate-950">{step.title}</h3>
-                <p className="mt-3 text-sm leading-6 text-slate-600">{step.detail}</p>
-              </div>
+        </div>
+      </section>
+
+      <section id="screens" className="bg-slate-50">
+        <div className="mx-auto max-w-[1180px] px-4 py-16 sm:px-6">
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-blue-700">Product screens</p>
+              <h2 className="mt-3 text-3xl font-semibold tracking-normal">
+                The workspace buyers see after sign-up.
+              </h2>
+              <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-600">
+                These are live screenshots from the current Evaller app, using a support AI release check with before and after run evidence.
+              </p>
+            </div>
+            <Link
+              href="/signup?next=/workspace"
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-[8px] bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
+            >
+              Open your workspace
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
+
+          <div className="mt-8 rounded-[8px] border border-slate-200 bg-white p-3 shadow-[0_18px_60px_rgba(15,23,42,0.10)]">
+            <Image
+              src="/landing/evaller-workspace.png"
+              alt="Evaller Workspace Cockpit showing release readiness, next recommended action, quality bar, and latest result"
+              width={1440}
+              height={1000}
+              loading="eager"
+              className="aspect-[16/10] w-full rounded-[8px] border border-slate-200 object-cover object-left-top"
+            />
+          </div>
+
+          <div className="mt-6 grid gap-5 lg:grid-cols-3">
+            {screenshots.map((screenshot) => (
+              <ScreenshotCard key={screenshot.title} {...screenshot} />
             ))}
           </div>
         </div>
       </section>
 
-      <section id="outputs" className="mx-auto grid max-w-[1180px] gap-8 px-4 py-16 sm:px-6 lg:grid-cols-[0.85fr_1.15fr]">
-        <div>
-          <h2 className="text-3xl font-semibold tracking-normal">The aha moment is concrete.</h2>
-          <p className="mt-4 text-sm leading-6 text-slate-600">
-            After the first trace import, the user should see what was detected, what was generated, and what needs review. No vague “AI magic” states.
-          </p>
-          <Link
-            href="/signup?next=/onboarding"
-            className="mt-6 inline-flex h-11 items-center justify-center gap-2 rounded-[7px] bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
-          >
-            Get Started
-            <ArrowRight className="h-4 w-4" />
-          </Link>
-        </div>
-        <div className="grid gap-3">
-          {auditOutputs.map((output) => (
-            <div key={output} className="flex items-center gap-3 rounded-[8px] border border-slate-200 bg-white p-4 shadow-sm">
-              <CheckCircle2 className="h-5 w-5 shrink-0 text-blue-600" />
-              <span className="text-sm font-medium text-slate-800">{output}</span>
-            </div>
-          ))}
+      <section id="trust" className="border-y border-slate-200 bg-white">
+        <div className="mx-auto grid max-w-[1180px] gap-8 px-4 py-16 sm:px-6 lg:grid-cols-[0.85fr_1.15fr]">
+          <div>
+            <p className="text-sm font-semibold text-blue-700">Why teams use it</p>
+            <h2 className="mt-3 text-3xl font-semibold tracking-normal">
+              Move from “the prompt seems fine” to reviewed release evidence.
+            </h2>
+            <p className="mt-4 text-sm leading-6 text-slate-600">
+              Evaller is intentionally narrow: it helps teams make a support AI release decision with a traceable test loop, not a sprawling observability platform.
+            </p>
+          </div>
+          <div className="grid gap-4 md:grid-cols-3">
+            <MiniCapability icon={BarChart3} title="Before and after" detail="See whether the fix improved pass rate, not just whether it sounded better." />
+            <MiniCapability icon={History} title="Prompt history" detail="Each run stays attached to the prompt version that produced it." />
+            <MiniCapability icon={LockKeyhole} title="Server-side AI" detail="OpenAI credentials stay server-side, with no customer key entry in the UI." />
+          </div>
         </div>
       </section>
 
-      <section id="screens" className="border-t border-slate-200 bg-slate-950 text-white">
-        <div className="mx-auto max-w-[1180px] px-4 py-16 sm:px-6">
-          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-            <div>
-              <h2 className="text-3xl font-semibold tracking-normal">Built around the audit workflow.</h2>
-              <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-300">
-                Dashboard, eval cases, graders, optimizer, routing, caching, and reports all point back to one customer workflow.
-              </p>
-            </div>
-            <Link
-              href="/dashboard"
-              className="inline-flex h-11 items-center justify-center gap-2 rounded-[7px] bg-white px-4 text-sm font-semibold text-slate-950 transition hover:bg-slate-100"
-            >
-              Open product dashboard
-              <ArrowRight className="h-4 w-4" />
-            </Link>
+      <section className="bg-slate-950 text-white">
+        <div className="mx-auto flex max-w-[1180px] flex-col gap-6 px-4 py-14 sm:px-6 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-3xl font-semibold tracking-normal">Create your first release check.</h2>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+              Start with one support AI prompt, three realistic scenarios, and a readiness report your team can review.
+            </p>
           </div>
-          <div className="mt-8 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-            <ScreenshotCard src="/landing/eval-builder.png" alt="Eval Builder with generated cases and review issue detail" title="Generated cases and review issues" />
-            <ScreenshotCard src="/landing/report.png" alt="Audit report with readiness score and recommendations" title="Report-ready recommendations" />
-          </div>
-          <div className="mt-8 grid gap-4 md:grid-cols-3">
-            <MiniCapability icon={ShieldCheck} title="Calibration" detail="Flag low-agreement graders before trust erodes." />
-            <MiniCapability icon={BarChart3} title="Coverage" detail="Show which intents are measured and which are thin." />
-            <MiniCapability icon={LockKeyhole} title="Privacy" detail="Make redaction and retention part of setup." />
-          </div>
+          <Link
+            href="/signup?next=/workspace"
+            className="inline-flex h-12 items-center justify-center gap-2 rounded-[8px] bg-white px-5 text-sm font-semibold text-slate-950 transition hover:bg-slate-100"
+          >
+            Create account
+            <ArrowRight className="h-4 w-4" />
+          </Link>
         </div>
       </section>
     </main>
@@ -218,27 +254,31 @@ function BrandMark() {
   );
 }
 
-function ProofPoint({ label, value }: { label: string; value: string }) {
+function ScreenshotCard({
+  src,
+  alt,
+  title,
+  detail,
+}: {
+  src: string;
+  alt: string;
+  title: string;
+  detail: string;
+}) {
   return (
-    <div className="rounded-[8px] border border-slate-200 bg-white p-3">
-      <p className="text-xs font-semibold text-slate-500">{label}</p>
-      <p className="mt-2 text-sm font-semibold text-slate-950">{value}</p>
-    </div>
-  );
-}
-
-function ScreenshotCard({ src, alt, title }: { src: string; alt: string; title: string }) {
-  return (
-    <figure className="rounded-[10px] border border-white/10 bg-white/5 p-3">
+    <figure className="rounded-[8px] border border-slate-200 bg-white p-3 shadow-sm">
       <Image
         src={src}
         alt={alt}
         width={1440}
-        height={950}
+        height={1000}
         loading="eager"
-        className="aspect-[16/10] w-full rounded-[8px] border border-white/10 object-cover object-left-top"
+        className="aspect-[16/10] w-full rounded-[8px] border border-slate-200 object-cover object-left-top"
       />
-      <figcaption className="px-1 pt-3 text-sm font-semibold text-slate-200">{title}</figcaption>
+      <figcaption className="px-1 pt-4">
+        <p className="text-sm font-semibold text-slate-950">{title}</p>
+        <p className="mt-1 text-sm leading-6 text-slate-600">{detail}</p>
+      </figcaption>
     </figure>
   );
 }
@@ -253,10 +293,10 @@ function MiniCapability({
   detail: string;
 }) {
   return (
-    <div className="rounded-[8px] border border-white/10 bg-white/5 p-4">
-      <Icon className="h-5 w-5 text-sky-300" />
-      <h3 className="mt-4 text-sm font-semibold text-white">{title}</h3>
-      <p className="mt-2 text-sm leading-6 text-slate-300">{detail}</p>
+    <div className="rounded-[8px] border border-slate-200 bg-slate-50 p-4">
+      <Icon className="h-5 w-5 text-blue-700" />
+      <h3 className="mt-4 text-sm font-semibold text-slate-950">{title}</h3>
+      <p className="mt-2 text-sm leading-6 text-slate-600">{detail}</p>
     </div>
   );
 }
