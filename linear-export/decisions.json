@@ -1,0 +1,42 @@
+[
+  {
+    "id": "EVL-DEC-001",
+    "title": "Canonical product surface",
+    "status": "Open",
+    "options": [
+      "EvalOps Copilot as described in prompt.md",
+      "Evaller as scoped product",
+      "Evaller as a sub-flow inside EvalOps Copilot"
+    ],
+    "blocking_issue_ids": [
+      "EVL-PROD-001",
+      "EVL-ROUTE-001"
+    ]
+  },
+  {
+    "id": "EVL-DEC-002",
+    "title": "Canonical data model boundary",
+    "status": "Open",
+    "options": [
+      "EvalOps project model owns the MVP",
+      "Evaller ai_test model owns the MVP",
+      "Evaller model becomes a child workflow under EvalOps projects"
+    ],
+    "blocking_issue_ids": [
+      "EVL-DATA-001"
+    ]
+  },
+  {
+    "id": "EVL-DEC-003",
+    "title": "Private MVP billing posture",
+    "status": "Open",
+    "options": [
+      "Manual/invoiced pilot billing",
+      "Stripe Checkout gated MVP",
+      "Stripe configured but hidden until launch candidate"
+    ],
+    "blocking_issue_ids": [
+      "EVL-BILL-001"
+    ]
+  }
+]

@@ -1,0 +1,30 @@
+[
+  {
+    "id": "EVL-RISK-001",
+    "level": "High",
+    "area": "Product",
+    "description": "The repo may continue developing a UI that does not match the intended EvalOps Copilot MVP.",
+    "mitigation": "Resolve EVL-PROD-001 and EVL-ROUTE-001 before route implementation."
+  },
+  {
+    "id": "EVL-RISK-002",
+    "level": "High",
+    "area": "Security",
+    "description": "RLS and private Storage isolation have tests and migrations, but latest remote state was not verified in this audit.",
+    "mitigation": "Run EVL-DATA-003, EVL-DATA-004, and EVL-STOR-002 before customer data."
+  },
+  {
+    "id": "EVL-RISK-003",
+    "level": "High",
+    "area": "Runtime",
+    "description": "Production AI/worker/smoke path is blocked by missing vendor credentials.",
+    "mitigation": "Complete EVL-OPS-001 and EVL-WORK-002 against preview."
+  },
+  {
+    "id": "EVL-RISK-004",
+    "level": "Medium",
+    "area": "Maintainability",
+    "description": "Large UI components increase regression risk while restoring routes.",
+    "mitigation": "Use route-by-route tickets and defer decomposition until route behavior is tested."
+  }
+]

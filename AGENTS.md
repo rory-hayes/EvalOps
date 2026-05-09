@@ -1,296 +1,106 @@
-# AGENTS.md — EvalOps Copilot Engineering Guide
+# AGENTS.md
 
-## Purpose
-This file tells coding agents how to work in this repository.
-Treat this file as the operational guide.
-Treat `prompt.md` as the product source of truth.
-If the two conflict, prefer:
-1. explicit user instruction;
-2. `prompt.md` for product intent;
-3. `AGENTS.md` for implementation rules.
+## Project Summary
+EvalOps Copilot is intended to be a private MVP SaaS for running an Eval Debt Audit on customer-facing AI workflows. The product source of truth is `prompt.md`: create projects, import traces, generate eval cases and graders, review failures, optimize prompts, recommend routing/caching, and produce executive reports.
 
----
+Current repo reality: the codebase contains both a broad EvalOps Copilot implementation path and a narrower active Evaller support-AI release-check UI. Do not assume these are aligned. Read the docs below before changing product behavior.
 
-## Working style
-- Build in **small, reviewable milestones**.
-- Favor **clarity and polish** over feature sprawl.
-- Prefer off-the-shelf services unless the functionality is core differentiation.
-- Do not implement speculative enterprise features.
-- Do not replace vendor services with custom infrastructure without a strong reason.
-- Keep the codebase solo-founder maintainable.
+## Required Reading Before Code Changes
+- `README.md`
+- `ROADMAP.md`
+- `prompt.md`
+- `docs/ARCHITECTURE.md`
+- `docs/PRODUCT.md`
+- `docs/DATA_MODEL.md`
+- `docs/DESIGN_SYSTEM.md`
+- `docs/QA_CHECKLIST.md`
+- `docs/HANDOFF_ANALYSIS.md`
 
----
+## Setup Commands
+Use npm. This repo has `package-lock.json`.
 
-## Repository goals
-This repository should become the codebase for **EvalOps Copilot**.
-The first build target is a **private MVP** that supports the Eval Debt Audit workflow.
+```bash
+npm install
+npm run dev
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run test:e2e
+npm run smoke:production
+```
 
-The product is a polished SaaS web app with:
-- multi-tenant projects;
-- trace upload and review;
-- eval generation and maintenance workflows;
-- grader configuration and calibration;
-- prompt optimization;
-- routing and caching recommendations;
-- executive reporting.
+Local deterministic mode, used by Playwright and useful without live Supabase/OpenAI credentials:
 
----
+```bash
+EVALOPS_TEST_MODE=1 EVALOPS_TEST_STORE_PATH=.evalops/local npm run dev
+```
 
-## Preferred stack
-Use the following defaults unless the repository already has a compatible alternative:
+## Development Rules
+- Keep changes small, reviewable, and verifiable.
+- Treat `prompt.md` as product intent and `ROADMAP.md` as the current execution backlog.
+- Do not introduce fake production plumbing or success states that hide missing services.
+- Do not commit secrets. Add or update `.env.example` only.
+- Prefer typed, validated data paths with Zod schemas for request bodies and core entities.
+- Protect authenticated product routes and server APIs.
+- Keep UI consistent with `docs/DESIGN_SYSTEM.md`.
+- Update `ROADMAP.md` after meaningful changes or newly discovered gaps.
+- Add tests for meaningful logic changes where the current Vitest or Playwright harness applies.
+- Do not delete the legacy EvalOps or active Evaller surfaces until the product direction is explicitly decided.
 
-### Frontend
-- Next.js
-- TypeScript
-- App Router
-- Tailwind CSS
-- shadcn/ui
-- Recharts or equivalent for charts
+## Architecture Rules
+- Framework: Next.js App Router with TypeScript.
+- Styling: Tailwind CSS v4 plus custom primitives in `src/components/primitives.tsx`; no shadcn package is currently installed.
+- Auth: Supabase Auth through `@supabase/ssr`; `src/proxy.ts` refreshes sessions and protects non-public pages when Supabase is configured.
+- Persistence: production mode uses Supabase Postgres and Storage; explicit test mode uses local durable JSON/file stores under `.evalops`.
+- Async: Inngest functions live in `src/lib/inngest/functions.ts`.
+- AI: OpenAI server-side calls are isolated under `src/lib/ai` and `src/lib/evaller/ai.ts`; deterministic paths are allowed only under `EVALOPS_TEST_MODE=1`.
+- Billing: Stripe code exists but launch posture is not production-complete until smoke tests and commercial decisions are verified.
 
-### Backend / persistence
-- Next.js server actions / route handlers
-- Supabase Postgres
-- Supabase Storage
+## Key Files
+- Active public and product routes: `src/app`
+- Active Evaller UI: `src/components/evaller/evaller-app.tsx`
+- Legacy/broader EvalOps UI: `src/components/workspace-app.tsx`
+- Shared shell/navigation: `src/components/app-shell.tsx`, `src/lib/navigation.ts`
+- API routes: `src/app/api`
+- Server store contracts: `src/lib/server/types.ts`
+- EvalOps stores: `src/lib/server/local-store.ts`, `src/lib/server/supabase-store.ts`
+- Evaller stores: `src/lib/evaller/local-store.ts`, `src/lib/evaller/supabase-store.ts`
+- Domain schemas/helpers: `src/lib/domain`, `src/lib/server/schemas.ts`
+- Supabase schema: `supabase/migrations`
+- E2E tests: `tests/e2e`
 
-### Auth / orgs
-- Supabase Auth with organisation membership records
+## UI Rules
+- Keep the app calm, professional, and B2B-oriented.
+- Prefer clear page headers, dense but readable panels, concise tables, and meaningful empty/loading/error states.
+- Use the existing blue accent, slate neutrals, 7-8px radii, Geist typography, and Lucide icons.
+- Avoid decorative motion, loud color, marketing-style dashboard clutter, or toy-feeling placeholders.
+- If reviving the EvalOps pages, keep the shared left navigation and project switcher coherent across all required MVP screens.
 
-### Async workflows
-- Inngest
+## Data, Auth, And Security Rules
+- Model tenant data with organization/project ownership and explicit membership checks.
+- Never expose service-role keys or OpenAI/Stripe/Inngest secrets to the browser.
+- Prefer derived eval artifacts over raw trace retention.
+- Keep redaction, raw retention, export, and deletion flows visible and auditable.
+- Do not log raw traces, prompts, or sensitive customer content casually.
+- Treat Supabase RLS and private Storage policies as production-critical.
 
-### AI / generation
-- OpenAI Responses API
-- Structured Outputs
+## Testing And Validation
+Before handing off code changes, run the narrowest relevant checks and the full suite when behavior changes:
 
-### Infra / ops
-- Vercel
-- Stripe (later)
-- Sentry
-- PostHog
+```bash
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run test:e2e
+```
 
-Do not introduce extra services unless clearly justified.
+`npm run smoke:production` requires real smoke credentials and should fail fast when they are absent. Do not treat a missing-env smoke failure as app verification.
 
----
-
-## Implementation principles
-1. **Product before platform**
-   Build user-visible workflows before infrastructure abstractions.
-2. **Mock before overbuilding**
-   For Milestone 1, it is acceptable to use realistic mocked data or mocked generation layers.
-3. **Deterministic shell**
-   Build deterministic page flows and typed data models even if AI workflows are mocked first.
-4. **Strong typing**
-   Use TypeScript types and Zod schemas for core entities.
-5. **Accessible UI**
-   Build keyboard-accessible forms, buttons, and navigation where practical.
-6. **Calm design**
-   Avoid noisy layouts and unnecessary animations.
-7. **No magic hidden state**
-   Keep state transitions explicit and debuggable.
-
----
-
-## Scope control
-For Milestone 1, do NOT build:
-- full integrations with LangSmith, Langfuse, Braintrust, Zendesk, Intercom, etc.;
-- enterprise SSO/SAML;
-- self-hosting;
-- billing and subscriptions beyond placeholders;
-- production-grade eval execution engine;
-- a custom SDK for tracing;
-- a custom model gateway;
-- generic all-in-one observability platform features;
-- browser extensions.
-
-Allowed for Milestone 1:
-- placeholders and disabled “coming soon” integration affordances;
-- mocked import data;
-- mocked eval generation results;
-- mocked optimizer results;
-- static sample charts/tables.
-
----
-
-## Must-have pages for Milestone 1
-Implement the following pages/components:
-
-1. `Dashboard`
-2. `Projects / Create New Project`
-3. `Trace Import`
-4. `Eval Builder`
-5. `Graders`
-6. `Prompt Optimizer`
-7. `Routing & Caching`
-8. `Reports`
-9. `Settings` (lightweight)
-
-A shared left navigation and top project switcher should exist.
-
----
-
-## UX expectations
-The app should feel:
-- polished enough for a paid B2B product;
-- visually consistent;
-- easy to scan;
-- confident and minimal.
-
-Do:
-- use strong section headers;
-- keep card layouts clean;
-- prefer 2–3 levels of hierarchy, not more;
-- show meaningful placeholder data;
-- include supportive empty and loading states.
-
-Do not:
-- clutter the screen;
-- overuse bright colors;
-- add needless motion;
-- build toy dashboards.
-
----
-
-## Design system guidance
-- Use a light theme by default.
-- Use one accent color family consistently.
-- Use red/orange/yellow sparingly for failure/risk states.
-- Use green only for genuinely healthy states.
-- Use rounded cards and clean spacing.
-- Prioritize whitespace and legibility.
-
-Typography should be professional, not playful.
-
----
-
-## Data model guidance
-Model these entities early, even if seeded or mocked:
-- Organization
-- User
-- Project
-- WorkflowType
-- TraceImport
-- Trace
-- Intent
-- EvalDataset
-- EvalCase
-- Grader
-- EvalRun
-- EvalResult
-- FailureCluster
-- PromptVersion
-- PromptCandidate
-- RoutingRule
-- CacheRecommendation
-- Report
-
-Use Zod schemas and typed interfaces for these.
-
----
-
-## Code structure guidance
-Prefer a structure like:
-
-- `app/` for routes and pages
-- `components/` for reusable UI
-- `lib/` for domain logic, schemas, helpers, providers
-- `data/` for mock seed data if needed
-- `types/` or `lib/schemas/` for typed domain models
-
-If adding mock data, keep it organized and reusable.
-
----
-
-## Domain logic guidance
-Core product logic should eventually live in dedicated modules:
-- trace ingestion / validation
-- privacy / redaction
-- intent taxonomy generation
-- eval case generation
-- grader configuration
-- judge calibration
-- prompt analysis / optimization
-- routing recommendation
-- caching recommendation
-- reporting
-
-For Milestone 1, these can be mocked or partially implemented, but their module boundaries should be clear.
-
----
-
-## Privacy rules
-This product touches sensitive customer data.
-Design for privacy from the start.
-
-Rules:
-- never hardcode secrets;
-- never log raw sensitive content casually;
-- expose redaction controls in the UI;
-- show retention-aware UX where relevant;
-- prefer storing derived artifacts over raw traces;
-- make delete/export flows easier to add later.
-
-If building mock data, ensure it is fake and obviously non-sensitive.
-
----
-
-## API / AI guidance
-When adding real OpenAI integration in later milestones:
-- use Responses API;
-- prefer Structured Outputs;
-- keep schemas explicit;
-- isolate LLM calls in a dedicated service layer;
-- design outputs so they can be rendered in the existing UI with minimal change.
-
-Do not scatter LLM call logic across the UI.
-
----
-
-## Testing expectations
-At minimum, add:
-- linting;
-- typechecking;
-- basic unit tests for pure helpers/schemas if introduced.
-
-If test infra exists, use it.
-If not, do not spend Milestone 1 building a huge test harness.
-
-Do ensure:
-- pages build;
-- navigation works;
-- mock data renders reliably;
-- forms behave predictably.
-
----
-
-## Done definition for Milestone 1
-Milestone 1 is done when:
-- the app builds and runs locally;
-- core navigation exists;
-- all required screens exist;
-- the UI reflects the product described in `prompt.md`;
-- seeded/mock data makes the app believable;
-- the product feels polished rather than placeholder-heavy;
-- there is a clear path to wiring in real generation workflows next.
-
----
-
-## What to do before coding
-1. Read `prompt.md`.
-2. Inspect repository structure.
-3. Determine what already exists.
-4. Create a short implementation plan.
-5. Then build Milestone 1 only.
-
-Do not attempt the whole company, all integrations, or enterprise functionality in one pass.
-
----
-
-## What to report after work
-When completing a task, report:
-- what was built;
-- which files changed;
-- what commands were run;
-- what remains for the next milestone;
-- any assumptions made.
-
-Keep the report concise and useful.
+## Known Risks
+- Active product routes expose Evaller, while `prompt.md` expects EvalOps Copilot.
+- Required EvalOps MVP routes currently redirect to `/workspace` instead of rendering distinct workflows.
+- `src/components/workspace-app.tsx` contains broad EvalOps UI but is not wired into active pages.
+- Playwright E2E currently fails against the active UI/route contract.
+- Production smoke cannot run without configured Supabase/OpenAI/Inngest/Stripe smoke env vars.

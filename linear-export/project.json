@@ -1,0 +1,34 @@
+{
+  "project_name": "EvalOps Copilot",
+  "project_slug": "evalops-copilot",
+  "repo_url": "https://github.com/rory-hayes/EvalOps",
+  "deployment_url": "https://evalops-copilot.vercel.app",
+  "product_summary": "Private MVP SaaS for running an Eval Debt Audit on one customer-facing AI workflow: create/select a project, import traces, generate and review eval assets, calibrate graders, optimize prompts, recommend routing/caching, and export an audit report.",
+  "current_stage": "Repo audit complete; controlled Linear backlog setup in progress",
+  "mvp_readiness_score": 5,
+  "production_readiness_score": 5,
+  "target_readiness_score": 10,
+  "top_blockers": [
+    "Product surface mismatch between EvalOps Copilot requirements and active Evaller UI.",
+    "Required EvalOps MVP routes mostly redirect to /workspace.",
+    "Playwright E2E suite is red.",
+    "Live production smoke is blocked by missing vendor/smoke credentials.",
+    "EvalOps and Evaller data models overlap without a documented boundary."
+  ],
+  "top_risks": [
+    "Shipping the wrong product surface.",
+    "Tenant isolation or storage policies not verified against the latest migrations.",
+    "Production AI/worker path not verified outside deterministic test mode.",
+    "Billing/commercial gates may imply readiness not approved by operator/counsel.",
+    "Large UI components make route restoration risky without small PR boundaries."
+  ],
+  "recommended_next_focus": [
+    "Resolve canonical product surface decision.",
+    "Define route/navigation contract.",
+    "Recover E2E suite against that contract.",
+    "Verify production-mode auth, RLS, Inngest, OpenAI, and storage on preview."
+  ],
+  "audit_date": "2026-05-09",
+  "linear_team": "TallyRec (TAL)",
+  "linear_project_url": "https://linear.app/tallyrec/project/evalops-copilot-fff3ff578645"
+}

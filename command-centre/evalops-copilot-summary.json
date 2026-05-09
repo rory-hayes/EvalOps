@@ -1,0 +1,26 @@
+{
+  "project_name": "EvalOps Copilot",
+  "project_slug": "evalops-copilot",
+  "repo_url": "https://github.com/rory-hayes/EvalOps",
+  "deployment_url": "https://evalops-copilot.vercel.app",
+  "generated_at": "2026-05-09T00:00:00.000Z",
+  "production_readiness_score": 5,
+  "google_sheet_url": "https://docs.google.com/spreadsheets/d/1ETQpoTLHdj5u2JUro9810miQJoBoB8yCcEOvNuPiFCM/edit?gid=0#gid=0",
+  "sync_status": "local_fallback_only",
+  "rows": 19,
+  "health": {
+    "install": "passed",
+    "lint": "passed",
+    "typecheck": "passed",
+    "unit_tests": "passed",
+    "build": "passed",
+    "e2e": "failed",
+    "production_smoke": "blocked_missing_env"
+  },
+  "top_blockers": [
+    "Product surface mismatch between EvalOps Copilot and Evaller.",
+    "Required EvalOps MVP pages mostly redirect to /workspace.",
+    "Playwright E2E fails.",
+    "Production smoke requires missing credentials."
+  ]
+}

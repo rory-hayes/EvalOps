@@ -1,0 +1,68 @@
+[
+  {
+    "name": "area/auth"
+  },
+  {
+    "name": "area/data"
+  },
+  {
+    "name": "area/api"
+  },
+  {
+    "name": "area/frontend"
+  },
+  {
+    "name": "area/backend"
+  },
+  {
+    "name": "area/ai"
+  },
+  {
+    "name": "area/security"
+  },
+  {
+    "name": "area/billing"
+  },
+  {
+    "name": "area/qa"
+  },
+  {
+    "name": "area/deployment"
+  },
+  {
+    "name": "area/ux"
+  },
+  {
+    "name": "area/docs"
+  },
+  {
+    "name": "priority/P0"
+  },
+  {
+    "name": "priority/P1"
+  },
+  {
+    "name": "priority/P2"
+  },
+  {
+    "name": "priority/P3"
+  },
+  {
+    "name": "mvp-required"
+  },
+  {
+    "name": "plan-first"
+  },
+  {
+    "name": "codex-ready"
+  },
+  {
+    "name": "risk/high"
+  },
+  {
+    "name": "risk/medium"
+  },
+  {
+    "name": "risk/low"
+  }
+]

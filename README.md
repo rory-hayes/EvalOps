@@ -1,149 +1,120 @@
 # EvalOps Copilot
 
-EvalOps Copilot is a production-oriented private MVP for running an Eval Debt Audit on a customer-facing AI workflow. Core flows now go through API routes, durable storage, processing records, review issues, exports, and audit events.
+EvalOps Copilot is intended to become a private MVP SaaS for running an Eval Debt Audit on one customer-facing AI workflow: upload traces, generate and review eval assets, calibrate graders, compare prompt candidates, recommend routing/caching changes, and export an audit report.
 
-## Stack
+## Current Status
+This repository is buildable and has substantial backend, persistence, test, and operational code. It is not yet product-surface complete for the EvalOps Copilot MVP described in `prompt.md`.
 
-- Next.js App Router, TypeScript, Tailwind CSS
+The active app currently presents a narrower **Evaller** support-AI release-readiness loop at `/workspace`, `/runs`, `/templates`, and `/settings`. The broader EvalOps Copilot UI exists in `src/components/workspace-app.tsx` and API/store code exists for projects, trace imports, eval cases, graders, reports, exports, billing, teams, and privacy operations, but the required MVP pages mostly redirect to `/workspace`.
+
+See `ROADMAP.md` for the productionisation backlog.
+
+## Tech Stack
+- Next.js 16 App Router
+- React 19 and TypeScript
+- Tailwind CSS v4
+- Custom component primitives and Lucide icons
 - Supabase Auth, Postgres, and Storage
-- Inngest-backed trace import processing
-- OpenAI Responses API structured audit generation outside test mode
-- Deterministic trace parser for explicit local test mode
-- CSV eval-pack export and PDF audit report export
-- Editable grader configuration and project privacy/risk settings for paid-pilot review
-- Vitest unit/integration tests and Playwright E2E tests
+- Inngest for background workflows
+- OpenAI Responses API boundaries for audit/AI test generation
+- Stripe billing code paths
+- Vercel Analytics
+- Vitest and Playwright
 
-## Environment
+## Main User Flows Present
+- Public landing, legal, contact, login, signup, and invite pages
+- Active Evaller workspace for support-AI prompt tests
+- Evaller run history, prompt suggestions, prompt version restore, review comments, and readiness approval records
+- Legacy/broader EvalOps API flow for project creation, trace import, processing jobs, eval artifacts, issue review, exports, privacy operations, billing, team invites, and support requests
+- Token-protected readiness endpoint and production smoke script
 
-Copy `.env.example` to `.env.local`.
+## Important Product Gap
+`prompt.md` defines EvalOps Copilot. The active UI and metadata are branded as Evaller. Future work should first decide whether to:
 
-For production-like development with real services, set:
+1. restore/wire the broader EvalOps Copilot product surface, or
+2. intentionally re-scope the repository to Evaller and update product requirements accordingly.
 
-```bash
-NEXT_PUBLIC_SUPABASE_URL=...
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
-SUPABASE_SECRET_KEY=...
-OPENAI_API_KEY=...
-OPENAI_AUDIT_MODEL=gpt-5.5
-OPENAI_EVALLER_MODEL=gpt-5.5
-INNGEST_EVENT_KEY=...
-INNGEST_SIGNING_KEY=...
-STRIPE_SECRET_KEY=...
-STRIPE_WEBHOOK_SECRET=...
-STRIPE_STARTER_PRICE_ID=...
-STRIPE_GROWTH_PRICE_ID=...
-EVALOPS_SMOKE_TOKEN=...
-```
+Do not delete either surface until that decision is explicit.
 
-For deterministic local E2E without live credentials, explicitly set:
-
-```bash
-EVALOPS_TEST_MODE=1
-EVALOPS_TEST_STORE_PATH=.evalops
-```
-
-Test mode uses a local durable store, local file persistence, and deterministic generation only. Production mode fails visibly if Supabase, OpenAI, or Inngest credentials are missing.
-
-## Supabase Setup
-
-```bash
-supabase link --project-ref <project-ref>
-supabase db push
-supabase db advisors --linked
-```
-
-The committed migrations create tenant-scoped tables, enable RLS, create storage buckets, and apply storage policies for organization-prefixed object paths. Authenticated access is based on Supabase `auth.uid()` plus durable organization membership records.
-
-Supabase Auth email confirmations are disabled for the private MVP, so new users can sign in immediately after signup. The Supabase Site URL is `https://evalops-copilot.vercel.app`; `/auth/confirm` remains available for future magic-link, email-confirmation, or OAuth/code exchange flows.
-
-Local Supabase ports are intentionally configured in the `554xx` range to avoid clashes with other projects:
-
-```bash
-supabase start
-supabase migration list --local
-supabase db lint --local --fail-on error
-```
-
-## Local Development
+## Local Setup
+Install dependencies:
 
 ```bash
 npm install
+```
+
+Run locally:
+
+```bash
 npm run dev
 ```
 
 Open `http://localhost:3000`.
 
-For a production build locally:
+For deterministic local development without live Supabase/OpenAI credentials:
 
 ```bash
-npm run build
-npm run start -- -p 3001
+EVALOPS_TEST_MODE=1 EVALOPS_TEST_STORE_PATH=.evalops/local npm run dev
 ```
 
-## Verification
+## Environment Variables
+Copy `.env.example` to `.env.local` and fill only the values needed for your mode.
+
+Local deterministic mode requires:
 
 ```bash
-npm test
-npm run lint
-npm run typecheck
-npm run build
-npm run test:e2e
+EVALOPS_TEST_MODE=1
+EVALOPS_TEST_STORE_PATH=.evalops/local
 ```
 
-## Production Cutover Gate
+Production-like mode requires Supabase, OpenAI, and Inngest credentials. Stripe variables are required for billing flows and production readiness checks. Smoke testing requires dedicated smoke users and token values.
 
-Milestone 3 adds two operational endpoints:
+Never commit real secrets.
 
-- `GET /api/health` is public liveness. It does not touch vendors or reveal configuration.
-- `GET /api/readiness` requires `Authorization: Bearer $EVALOPS_SMOKE_TOKEN` and checks required envs, Supabase Postgres, and private Storage buckets.
-
-Run the live smoke against a preview or production deployment with real smoke users:
-
+## Scripts
 ```bash
-EVALOPS_BASE_URL=https://<deployment-url> npm run smoke:production
+npm run dev              # Start Next.js locally
+npm run build            # Production build
+npm run start            # Serve a built app
+npm run lint             # ESLint
+npm run typecheck        # TypeScript no-emit check
+npm test                 # Vitest unit/integration tests
+npm run test:e2e         # Playwright browser tests
+npm run smoke:production # Live vendor smoke, requires env
 ```
 
-The smoke signs in through Supabase Auth, creates a project, uploads a trace file, waits for Inngest processing, verifies OpenAI structured generation metadata, runs the live Evaller support-AI loop, exports a PDF, checks duplicate upload protection, and confirms Supabase RLS/storage isolation between two smoke users.
+## Verified On 2026-05-09
+- `npm install`: passed, with deprecation warnings only.
+- `npm run lint`: passed.
+- `npm run typecheck`: passed.
+- `npm test`: passed, 22 files and 97 tests.
+- `npm run build`: passed.
+- `npm run test:e2e`: failed, 4 failed and 6 passed. Failures are documented in `docs/QA_CHECKLIST.md` and `ROADMAP.md`.
+- `npm run smoke:production`: failed fast because smoke/vendor env vars were missing.
 
-## Vercel Deployment
+## Deployment Notes
+- Vercel is the assumed hosting target.
+- Supabase migrations live in `supabase/migrations`.
+- Supabase local ports are configured in `supabase/config.toml`.
+- Inngest endpoint is `/api/inngest`.
+- Health endpoint is `/api/health`.
+- Readiness endpoint is `/api/readiness` and requires `Authorization: Bearer $EVALOPS_SMOKE_TOKEN`.
+- Do not deploy with `EVALOPS_TEST_MODE=1`.
 
-Link the project and set the env vars above:
+## Known Limitations
+- Required EvalOps MVP pages are not active as distinct screens.
+- Active app navigation exposes only Workspace, Runs, Templates, and Settings.
+- The product brand and route contract are inconsistent across docs, UI, metadata, tests, and components.
+- Playwright E2E is currently red.
+- Production smoke requires live credentials and was not executed against a deployment in this audit.
+- Legal/commercial copy remains placeholder-level and needs human review before paid launch.
 
-```bash
-vercel link
-vercel env add NEXT_PUBLIC_SUPABASE_URL production
-vercel env add NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY production
-vercel env add SUPABASE_SECRET_KEY production
-vercel env add OPENAI_API_KEY production
-vercel env add OPENAI_AUDIT_MODEL production
-vercel env add OPENAI_EVALLER_MODEL production
-vercel env add INNGEST_EVENT_KEY production
-vercel env add INNGEST_SIGNING_KEY production
-vercel env add STRIPE_SECRET_KEY production
-vercel env add STRIPE_WEBHOOK_SECRET production
-vercel env add STRIPE_STARTER_PRICE_ID production
-vercel env add STRIPE_GROWTH_PRICE_ID production
-vercel env add EVALOPS_SMOKE_TOKEN production
-vercel deploy --prod
-```
-
-Do not deploy with `EVALOPS_TEST_MODE=1`; that mode is only for deterministic local and CI verification.
-
-Set the same app envs for Preview before running the production smoke against preview deployments. Keep smoke user credentials in GitHub Actions secrets for the manual `Production Smoke` workflow:
-
-```bash
-EVALOPS_SMOKE_TOKEN
-EVALOPS_SMOKE_EMAIL
-EVALOPS_SMOKE_PASSWORD
-EVALOPS_SMOKE_SECONDARY_EMAIL
-EVALOPS_SMOKE_SECONDARY_PASSWORD
-NEXT_PUBLIC_SUPABASE_URL
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-OPENAI_EVALLER_MODEL
-```
-
-## Source Documents
-
-- `prompt.md` is the product source of truth.
-- `AGENTS.md` is the engineering guide.
-- `docs/production-readiness.md` summarizes the current production-readiness state.
+## Documentation
+- `AGENTS.md` for future coding agents
+- `ROADMAP.md` for productionisation tasks
+- `docs/PRODUCT.md` for product intent and gaps
+- `docs/ARCHITECTURE.md` for technical structure
+- `docs/DATA_MODEL.md` for schema and persistence notes
+- `docs/DESIGN_SYSTEM.md` for UI conventions
+- `docs/QA_CHECKLIST.md` for validation coverage
+- `docs/HANDOFF_ANALYSIS.md` for migrated handoff search results
