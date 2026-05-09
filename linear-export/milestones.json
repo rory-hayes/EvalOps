@@ -1,0 +1,26 @@
+[
+  {
+    "name": "00 Repo Audit & Setup",
+    "description": "Planning, Linear setup, decisions, and documentation required before implementation work."
+  },
+  {
+    "name": "01 MVP Foundation",
+    "description": "Canonical product surface, routing, navigation, tenancy, data model, and E2E contract."
+  },
+  {
+    "name": "02 Core Product Flow",
+    "description": "Project creation, trace import, eval review, grader review, prompt optimization, routing/caching, and reports."
+  },
+  {
+    "name": "03 Production Readiness",
+    "description": "Auth verification, RLS/storage isolation, vendor smoke, workers, privacy operations, and deployment hardening."
+  },
+  {
+    "name": "04 Launch Candidate",
+    "description": "Commercial, support, legal, observability, accessibility, and final smoke pass."
+  },
+  {
+    "name": "05 Later Enhancements",
+    "description": "Non-MVP integrations, SDKs, analytics expansion, and broader product polish."
+  }
+]
