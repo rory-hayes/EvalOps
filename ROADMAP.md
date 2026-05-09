@@ -8,13 +8,7 @@ This repository appears to be a Next.js SaaS product for AI evaluation workflows
 
 The currently active app surface is narrower. The public landing page, metadata, navigation, and active authenticated routes are branded as **Evaller**, a support-AI release-readiness loop. That active flow lets a user configure a support AI test, define scenarios and success criteria, run an AI test, apply a prompt fix, rerun, review run history, copy/approve readiness reports, and manage a focused settings/templates area.
 
-The core unresolved product question is whether this repo should ship:
-
-1. EvalOps Copilot as described in `prompt.md`;
-2. Evaller as the actual scoped product;
-3. Evaller as one workflow inside EvalOps Copilot.
-
-Until that decision is recorded, feature work risks pushing the repo in two different directions.
+The canonical product decision is recorded in `docs/PRODUCT_SURFACE_DECISION.md`: this repo ships **EvalOps Copilot** as the private MVP product, with **Evaller as a support-AI release-check sub-flow inside EvalOps Copilot**. Follow-up work must align routes, navigation, metadata, copy, tests, and data ownership to that decision.
 
 ## 2. Current Implementation Status
 
@@ -269,15 +263,15 @@ It is not MVP Ready because the active product surface does not match the stated
 
 ## 5. Critical Gaps
 
-### GAP-001: Product surface is unresolved
+### GAP-001: Product surface implementation is misaligned
 
 Priority: P0
 Area: UX / Product
-Status: Open
+Status: Decision Recorded / Implementation Open
 
 #### Gap
 
-The repo contains two product surfaces: intended EvalOps Copilot and active Evaller.
+The repo contains two product surfaces: canonical EvalOps Copilot and active Evaller. `docs/PRODUCT_SURFACE_DECISION.md` records EvalOps Copilot as canonical and Evaller as a support-AI release-check sub-flow, but the active app still exposes Evaller as the top-level product.
 
 #### Impact
 
@@ -293,7 +287,7 @@ Codex runs can implement the wrong product, tests can encode the wrong contract,
 
 #### Recommended Fix
 
-Create a short product decision record that chooses EvalOps, Evaller, or Evaller inside EvalOps. Then update route, nav, copy, data model, and test plans to match.
+Use `docs/PRODUCT_SURFACE_DECISION.md` as the source of truth. Then update route, nav, copy, data model, and test plans to match.
 
 ### GAP-002: Required EvalOps MVP routes redirect to `/workspace`
 
@@ -582,7 +576,7 @@ npm run test:e2e
 
 ### TASK-001: Record canonical product surface decision
 
-Status: Ready
+Status: In Review
 Priority: P0
 Area: Other
 Depends on: None
@@ -595,6 +589,8 @@ Decide whether this repo ships EvalOps Copilot, Evaller, or Evaller as a sub-flo
 #### Scope
 
 Create a decision record or update product docs with canonical product name, route set, navigation labels, landing stance, and data model implications. Do not change app behavior.
+
+Decision record: `docs/PRODUCT_SURFACE_DECISION.md`.
 
 #### Acceptance Criteria
 

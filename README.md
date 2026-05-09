@@ -7,6 +7,8 @@ This repository is buildable and has substantial backend, persistence, test, and
 
 The active app currently presents a narrower **Evaller** support-AI release-readiness loop at `/workspace`, `/runs`, `/templates`, and `/settings`. The broader EvalOps Copilot UI exists in `src/components/workspace-app.tsx` and API/store code exists for projects, trace imports, eval cases, graders, reports, exports, billing, teams, and privacy operations, but the required MVP pages mostly redirect to `/workspace`.
 
+Canonical product decision: this repo ships **EvalOps Copilot**, with **Evaller as a support-AI release-check sub-flow inside EvalOps Copilot**. See `docs/PRODUCT_SURFACE_DECISION.md` before changing product naming, routes, navigation, or data boundaries.
+
 See `ROADMAP.md` for the productionisation backlog.
 
 ## Tech Stack
@@ -28,13 +30,10 @@ See `ROADMAP.md` for the productionisation backlog.
 - Legacy/broader EvalOps API flow for project creation, trace import, processing jobs, eval artifacts, issue review, exports, privacy operations, billing, team invites, and support requests
 - Token-protected readiness endpoint and production smoke script
 
-## Important Product Gap
-`prompt.md` defines EvalOps Copilot. The active UI and metadata are branded as Evaller. Future work should first decide whether to:
+## Product Surface Gap
+`prompt.md` defines EvalOps Copilot, and `docs/PRODUCT_SURFACE_DECISION.md` records EvalOps Copilot as canonical. The active UI and metadata are still branded as Evaller, so follow-up work must align routes, navigation, copy, tests, and data ownership to that decision.
 
-1. restore/wire the broader EvalOps Copilot product surface, or
-2. intentionally re-scope the repository to Evaller and update product requirements accordingly.
-
-Do not delete either surface until that decision is explicit.
+Do not delete either surface until the follow-up route and data tasks explicitly decide what becomes canonical, nested, aliased, or legacy.
 
 ## Local Setup
 Install dependencies:
@@ -112,6 +111,7 @@ npm run smoke:production # Live vendor smoke, requires env
 ## Documentation
 - `AGENTS.md` for future coding agents
 - `ROADMAP.md` for productionisation tasks
+- `docs/PRODUCT_SURFACE_DECISION.md` for the canonical EvalOps/Evaller product surface decision
 - `docs/PRODUCT.md` for product intent and gaps
 - `docs/ARCHITECTURE.md` for technical structure
 - `docs/DATA_MODEL.md` for schema and persistence notes
