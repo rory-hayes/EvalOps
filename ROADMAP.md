@@ -576,7 +576,7 @@ npm run test:e2e
 
 ### TASK-001: Record canonical product surface decision
 
-Status: In Progress
+Status: In Review
 Priority: P0
 Area: Other
 Depends on: None
