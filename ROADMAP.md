@@ -609,7 +609,7 @@ This is the first task because nearly every implementation task depends on the a
 
 ### TASK-002: Define canonical route and navigation contract
 
-Status: Ready
+Status: In Progress
 Priority: P0
 Area: UX
 Depends on: TASK-001
