@@ -112,6 +112,7 @@ npm run smoke:production # Live vendor smoke, requires env
 - `AGENTS.md` for future coding agents
 - `ROADMAP.md` for productionisation tasks
 - `docs/PRODUCT_SURFACE_DECISION.md` for the canonical EvalOps/Evaller product surface decision
+- `docs/ROUTE_NAVIGATION_CONTRACT.md` for route, redirect, navigation, mobile label, and project switcher expectations
 - `docs/PRODUCT.md` for product intent and gaps
 - `docs/ARCHITECTURE.md` for technical structure
 - `docs/DATA_MODEL.md` for schema and persistence notes
